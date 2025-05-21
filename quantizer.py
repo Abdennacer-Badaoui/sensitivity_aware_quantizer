@@ -8,6 +8,7 @@ MODELS = [
     #"microsoft/DialoGPT-small",
     "gpt2",
     #"distilgpt2",
+    #"EleutherAI/gpt-neo-125M",
     # Add more model names as needed
 ]
 

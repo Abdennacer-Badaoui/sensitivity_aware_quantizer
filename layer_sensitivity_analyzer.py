@@ -17,8 +17,8 @@ class LayerSensitivityAnalyzer:
         device: str = "auto",
         calibration_data=None,
         eval_data=None,
-        calibration_num_samples: int = 1,
-        eval_num_samples: int = 1,
+        calibration_num_samples: int = 10,
+        eval_num_samples: int = 10,
         batch_size: int = 256,
         dataset_name: str = "wikitext",
         dataset_config: str = "wikitext-2-raw-v1",
@@ -303,64 +303,71 @@ class LayerSensitivityAnalyzer:
         return quantized_model
 
     def evaluate_model(self, model, num_samples: int = 30):
-        model.eval()
-        total_loss = 0
-        total_tokens = 0
-        
         try:
-            with torch.no_grad():
-                # Get model's maximum sequence length
-                max_length = model.config.max_position_embeddings
-                stride = 512  # Sliding window stride
+            from torch.nn import CrossEntropyLoss
+            
+            # Prepare evaluation texts
+            eval_texts = []
+            for i in range(min(num_samples, len(self.eval_data["input_ids"]))):
+                text = self.tokenizer.decode(self.eval_data["input_ids"][i], skip_special_tokens=True)
+                if len(text.strip()) > 0:
+                    eval_texts.append(text)
+            
+            if not eval_texts:
+                raise ValueError("No valid evaluation texts were found.")
+            
+            # Tokenize texts
+            encodings = self.tokenizer(
+                eval_texts,
+                add_special_tokens=True,
+                padding=True,
+                truncation=True,
+                max_length=model.config.max_position_embeddings,
+                return_tensors="pt",
+                return_attention_mask=True
+            ).to(self.device)
+            
+            encoded_texts = encodings["input_ids"]
+            attn_masks = encodings["attention_mask"]
+            
+            # Initialize loss function
+            loss_fct = CrossEntropyLoss(reduction="none")
+            total_loss = 0
+            total_tokens = 0
+            
+            # Process in batches
+            batch_size = 1  # Process one text at a time for stability
+            for start_index in range(0, len(encoded_texts), batch_size):
+                end_index = min(start_index + batch_size, len(encoded_texts))
+                encoded_batch = encoded_texts[start_index:end_index]
+                attn_mask = attn_masks[start_index:end_index]
                 
-                # Process each sample in the evaluation data
-                for i in range(min(num_samples, len(self.eval_data["input_ids"]))):
-                    input_ids = self.eval_data["input_ids"][i:i+1]  # Keep batch dimension
-                    attention_mask = self.eval_data["attention_mask"][i:i+1]
-                    seq_len = input_ids.size(1)
-                    
-                    prev_end_loc = 0
-                    for begin_loc in range(0, seq_len, stride):
-                        end_loc = min(begin_loc + max_length, seq_len)
-                        trg_len = end_loc - prev_end_loc
-                        
-                        # Prepare input and target
-                        batch_inputs = {
-                            "input_ids": input_ids[:, begin_loc:end_loc],
-                            "attention_mask": attention_mask[:, begin_loc:end_loc]
-                        }
-                        target_ids = batch_inputs["input_ids"].clone()
-                        target_ids[:, :-trg_len] = -100  # Mask out tokens not used for loss
-                        
-                        # Forward pass
-                        outputs = model(**batch_inputs, labels=target_ids)
-                        
-                        if hasattr(outputs, 'loss') and outputs.loss is not None:
-                            loss = outputs.loss
-                            if torch.isfinite(loss):
-                                # Calculate number of valid tokens for loss
-                                num_valid_tokens = (target_ids != -100).sum().item()
-                                batch_size = target_ids.size(0)
-                                num_loss_tokens = num_valid_tokens - batch_size  # Account for label shift
-                                
-                                total_loss += loss.item() * num_loss_tokens
-                                total_tokens += num_loss_tokens
-                        
-                        prev_end_loc = end_loc
-                        if end_loc == seq_len:
-                            break
-                            
+                with torch.no_grad():
+                    outputs = model(encoded_batch, attention_mask=attn_mask)
+                    logits = outputs.logits
+                
+                # Shift logits and labels for next-token prediction
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = encoded_batch[..., 1:].contiguous()
+                shift_attention_mask = attn_mask[..., 1:].contiguous()
+                
+                # Calculate loss
+                loss = loss_fct(shift_logits.transpose(1, 2), shift_labels) * shift_attention_mask
+                total_loss += loss.sum().item()
+                total_tokens += shift_attention_mask.sum().item()
+            
+            # Calculate final perplexity
+            if total_tokens > 0:
+                avg_loss = total_loss / total_tokens
+                perplexity = torch.exp(torch.tensor(avg_loss)).item()
+            else:
+                perplexity = float('inf')
+            
+            return perplexity
+            
         except Exception as e:
             print(f"Error during evaluation: {e}")
             return float('inf')
-            
-        if total_tokens == 0:
-            return float('inf')
-            
-        avg_loss = total_loss / total_tokens
-        avg_loss = min(avg_loss, 50)  # Cap the loss to prevent numerical issues
-        perplexity = math.exp(avg_loss)
-        return perplexity
 
     def run_full_analysis(self, target_avg_bits: float = 6.0):
         print("=" * 70)
