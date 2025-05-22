@@ -1,36 +1,37 @@
-import torch
 import json
-import os
 
 def get_model_size_mb(model, bit_config=None):
-    """Calculate model size in MB.
+    """Calculate model size in MB considering mixed precision quantization.
+    
     Args:
-        model: The PyTorch model
-        bit_config: Dictionary mapping layer names to their bit precision (e.g., {"layer1": 8, "layer2": 4})
+        model: PyTorch model.
+        bit_config: Dict mapping layer names to their quantization bits.
+                    Layers are matched by prefix (e.g., 'layer1' matches 'layer1.weight').
     """
     param_size = 0
+    sorted_layers = []
+    if bit_config:
+        # Sort layers by descending length to prioritize specific prefixes first
+        sorted_layers = sorted(bit_config.keys(), key=lambda x: (-len(x), x))
+    
     for name, param in model.named_parameters():
-        # Find the matching layer name in bit_config
-        matching_layer = None
-        for layer_name in bit_config.keys() if bit_config else []:
-            if layer_name in name:  # Check if layer_name is a substring of the parameter name
-                matching_layer = layer_name
+        bits = 32  # Default to 32-bit (unquantized)
+        
+        # Check if parameter belongs to a quantized layer
+        for layer_name in sorted_layers:
+            if name == layer_name or name.startswith(f"{layer_name}."):
+                bits = bit_config[layer_name]
                 break
         
-        if matching_layer and bit_config:
-            # For quantized layers, use the specified bit precision
-            bits = bit_config[matching_layer]
-            param_size += param.nelement() * (bits / 8)  # Convert bits to bytes
-        else:
-            # For non-quantized layers, use default 32-bit precision
-            param_size += param.nelement() * 4  # 4 bytes for 32-bit float
+        # Calculate size in bytes (bits/8)
+        param_size += param.nelement() * (bits / 8)
     
-    buffer_size = 0
-    for buffer in model.buffers():
-        buffer_size += buffer.nelement() * buffer.element_size()
+    # Calculate buffer size (always full precision)
+    buffer_size = sum(buffer.nelement() * buffer.element_size() 
+                    for buffer in model.buffers())
     
-    size_all_mb = (param_size + buffer_size) / 1024**2
-    return size_all_mb
+    total_size_bytes = param_size + buffer_size
+    return total_size_bytes / (1024 ** 2)  # Convert to MB
 
 
 def save_json(data, filepath):

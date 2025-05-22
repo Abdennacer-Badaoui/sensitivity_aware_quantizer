@@ -7,15 +7,17 @@ from utils import get_model_size_mb, save_json
 MODELS = [
     #"microsoft/DialoGPT-small",
     "gpt2",
-    #"distilgpt2",
-    #"EleutherAI/gpt-neo-125M",
+    "distilbert/distilgpt2",
+    "EleutherAI/gpt-neo-125M",
+    "facebook/opt-125M",
+    "facebook/opt-355M",
     # Add more model names as needed
 ]
 
 RESULTS_DIR = "results"
 PLOTS_DIR = "plots"
 
-def run_analysis_for_models(models, target_avg_bits=12.0):
+def run_analysis_for_models(models, target_avg_bits=12.0, metric="jsd"):
     all_results = {}
     for model_name in models:
         print(f"\n{'='*30}\nAnalyzing {model_name}\n{'='*30}")
@@ -23,7 +25,7 @@ def run_analysis_for_models(models, target_avg_bits=12.0):
             analyzer = LayerSensitivityAnalyzer(model_name=model_name)
             
             # Run analysis
-            results = analyzer.run_full_analysis(target_avg_bits=target_avg_bits)
+            results = analyzer.run_full_analysis(target_avg_bits=target_avg_bits, metric=metric)
             
             # Create results dictionary
             model_results = {
@@ -34,6 +36,7 @@ def run_analysis_for_models(models, target_avg_bits=12.0):
                 'sensitivity_scores': results.get('sensitivity_scores'),
                 'mixed_precision_config': results.get('mixed_precision_config'),
                 'bit_distribution': results.get('bit_distribution'),
+                'target_avg_bits': target_avg_bits,
                 'actual_avg_bits': results.get('actual_avg_bits')
             }
             
@@ -58,7 +61,7 @@ def run_analysis_for_models(models, target_avg_bits=12.0):
         save_json(all_results, os.path.join(RESULTS_DIR, "all_models_sensitivity.json"))
     return all_results
 
-def plot_comparisons(all_results):
+def plot_comparisons(all_results, target_avg_bits):
     if not all_results:
         print("No results to plot!")
         return
@@ -91,7 +94,7 @@ def plot_comparisons(all_results):
     ax1.set_xticks(x)
     ax1.set_xticklabels(model_names, rotation=45, ha="right")
     ax1.legend(loc="upper left")
-    ax1.set_title("Model Size Comparison")
+    ax1.set_title(f"Model Size Comparison (target avg bits: {target_avg_bits})")
     
     # Add size reduction percentage
     for i, (orig, quant) in enumerate(zip(orig_size, quant_size)):
@@ -106,7 +109,7 @@ def plot_comparisons(all_results):
     ax2.set_xticks(x)
     ax2.set_xticklabels(model_names, rotation=45, ha="right")
     ax2.legend(loc="upper left")
-    ax2.set_title("Model Perplexity Comparison")
+    ax2.set_title(f"Model Perplexity Comparison (target avg bits: {target_avg_bits})")
     
     # Add perplexity degradation percentage
     for i, (orig, quant) in enumerate(zip(orig_ppl, quant_ppl)):
@@ -119,14 +122,15 @@ def plot_comparisons(all_results):
     ax2.set_ylim(0, max(max(orig_ppl), max(quant_ppl)) * 1.2)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(PLOTS_DIR, "model_comparison.png"))
+    plt.savefig(os.path.join(PLOTS_DIR, f"model_comparison_{target_avg_bits}.png"))
     plt.close()
 
 def main():
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    all_results = run_analysis_for_models(MODELS, target_avg_bits=12.0)
+    target_avg_bits = 12.0
+    all_results = run_analysis_for_models(MODELS, target_avg_bits, metric="jsd")
     if all_results:
-        plot_comparisons(all_results)
+        plot_comparisons(all_results, target_avg_bits)
         print(f"\nAnalysis and visualizations complete. See {RESULTS_DIR} and {PLOTS_DIR}.")
     else:
         print("No results were generated. Check the errors above.")
