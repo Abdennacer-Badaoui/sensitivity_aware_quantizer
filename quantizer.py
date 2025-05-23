@@ -7,10 +7,9 @@ from utils import get_model_size_mb, save_json
 MODELS = [
     #"microsoft/DialoGPT-small",
     "gpt2",
-    "distilbert/distilgpt2",
-    "EleutherAI/gpt-neo-125M",
-    "facebook/opt-125M",
-    "facebook/opt-355M",
+    #"distilbert/distilgpt2",
+    #"EleutherAI/gpt-neo-125M",
+    #"facebook/opt-355M",
     # Add more model names as needed
 ]
 

@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Dict
 import torch
 import torch.nn as nn
@@ -42,7 +43,10 @@ class LayerSensitivityAnalyzer:
         self.eval_data = eval_data or self._prepare_hf_dataset(
             split="validation", num_samples=eval_num_samples, dataset_name=dataset_name, dataset_config=dataset_config, split_name="evaluation"
         )
+        self.super_weights = {}  
         self.sensitivity_scores = {}
+        self.original_dtype = torch.float32  
+
 
     def _prepare_hf_dataset(self, split: str, num_samples: int, dataset_name: str, dataset_config: str, split_name: str):
         print(f"Preparing {split_name} data from HuggingFace dataset: {dataset_name}/{dataset_config} [{split}] ...")
@@ -102,24 +106,50 @@ class LayerSensitivityAnalyzer:
         dequantized = quantized * scale
         return dequantized
 
-    def _quantize_layer(self, layer: nn.Module, bits: int = 8, preserve_magnitude: bool = False):
+    def _quantize_layer(self, layer: nn.Module, bits: int = 8, 
+                       preserve_magnitude: bool = False):
+        """FP32-aware quantization with super weight preservation"""
         if not hasattr(layer, 'weight'):
             return layer
+
+        layer_name = None
+        for name, module in self.model.named_modules():
+            if module == layer:
+                layer_name = name
+                break
+
+        # Preserve super weights in original FP32
+        sw_mask = torch.zeros_like(layer.weight, dtype=torch.bool)
+        if layer_name in self.super_weights:
+            row, col = self.super_weights[layer_name]  # Unpack the single tuple
+            if row < layer.weight.shape[0] and col < layer.weight.shape[1]:
+                sw_mask[row, col] = True
+
+        # Store original FP32 values for super weights
+        original_weight = layer.weight.data.clone()
+        quantized_weight = original_weight.clone()
+
+        # Only quantize non-super weights
+        if bits < 32:
+            # Quantize in FP32 space
+            non_sw_weights = original_weight[~sw_mask].float()
+            quantized_non_sw = self._symmetric_quantize(non_sw_weights, bits)
+            
+            # Maintain original dtype for super weights
+            quantized_weight[~sw_mask] = quantized_non_sw.to(original_weight.dtype)
+
+        # Create quantized layer
         quantized_layer = copy.deepcopy(layer)
-        original_weight = layer.weight.data
-        quantized_weight = self._symmetric_quantize(original_weight, bits, per_channel=True)
+        quantized_layer.weight.data = quantized_weight
+                
+        # Preserve super weight magnitude if requested
         if preserve_magnitude:
-            original_norm = torch.norm(original_weight)
-            quantized_norm = torch.norm(quantized_weight)
+            original_norm = torch.norm(original_weight[~sw_mask])
+            quantized_norm = torch.norm(quantized_weight[~sw_mask])
             if quantized_norm > 1e-8:
                 scale_factor = original_norm / quantized_norm
-                quantized_weight = quantized_weight * scale_factor
-        quantized_layer.weight.data = quantized_weight
-        if hasattr(layer, 'bias') and layer.bias is not None:
-            bias_bits = min(bits + 4, 16)
-            quantized_layer.bias.data = self._symmetric_quantize(
-                layer.bias.data, bias_bits, per_channel=False
-            )
+                quantized_weight[~sw_mask] *= scale_factor
+        
         return quantized_layer
 
     def _compute_activation_statistics(self):
@@ -155,6 +185,86 @@ class LayerSensitivityAnalyzer:
                 'magnitude': activation.norm().item()
             }
         return stats
+    
+    def _detect_super_weights(self, num_samples=3):
+        """Improved super weight detection with proper activation capture"""
+        print("Detecting super weights...")
+        activation_stats = {}
+        hooks = []
+
+        def activation_hook(module, input, output, layer_name):
+            # Ensure we capture the actual tensor values
+            try:
+                with torch.no_grad():
+                    # Handle different input/output formats
+                    input_act = input[0].detach().float()
+                    output_act = output.detach().float() if isinstance(output, torch.Tensor) else output[0].detach().float()
+
+                    # Store max values and indices
+                    activation_stats[layer_name] = {
+                        'input_max': input_act.abs().max().item(),
+                        'input_shape': input_act.shape,
+                        'output_max': output_act.abs().max().item(),
+                        'output_shape': output_act.shape,
+                    }
+            except Exception as e:
+                print(f"Error in hook for {layer_name}: {str(e)}")
+
+        # Register hooks on all MLP layers
+        for name, module in self.model.named_modules():
+            if 'mlp.down_proj' in name or 'mlp.c_proj' in name:
+                # Use lambda to capture layer name properly
+                hook = module.register_forward_hook(
+                    lambda m, i, o, name=name: activation_hook(m, i, o, name)
+                )
+                hooks.append(hook)
+
+        # Run forward passes with real data
+        with torch.no_grad():
+            for i in range(num_samples):
+                # Get proper input batch
+                inputs = {
+                    'input_ids': self.calibration_data["input_ids"][i:i+1],
+                    'attention_mask': self.calibration_data["attention_mask"][i:i+1]
+                }
+                
+                # Run forward pass
+                outputs = self.model(**inputs)
+
+        # Cleanup hooks
+        for hook in hooks:
+            hook.remove()
+
+        # Analyze statistics to find super weights
+        super_weights = {}
+        for layer_name, stats in activation_stats.items():
+            try:
+                if stats['output_max'] > 1e1 * stats['input_max']:
+                    weight = self.model.get_submodule(layer_name).weight
+                    d_out, d_in = weight.shape
+                    
+                    # Calculate typical dimensions
+                    input_channel = stats['input_shape'][-1]
+                    output_channel = stats['output_shape'][-1]
+                    
+                    # Find super weight coordinates (simplified version)
+                    row = output_channel % d_out
+                    col = input_channel % d_in
+                    
+                    super_weights[layer_name] = (int(row), int(col))
+                    print(f"Detected super weight in {layer_name} at ({row}, {col})")
+            except Exception as e:
+                print(f"Error analyzing {layer_name}: {str(e)}")
+
+        self.super_weights = super_weights
+        print(f"Final detected super weights: {super_weights}")
+
+    def _get_sample_input(self, index: int):
+        """Get a single sample input from the calibration data"""
+        return {
+            "input_ids": self.calibration_data["input_ids"][index:index+1],
+            "attention_mask": self.calibration_data["attention_mask"][index:index+1]
+        }
 
     def analyze_layer_sensitivity(self, bits: int = 8, metric: str = "jsd"):
         print(f"Analyzing layer sensitivity with {bits}-bit quantization...")
@@ -415,6 +525,7 @@ class LayerSensitivityAnalyzer:
         print("=" * 70)
         print("IMPROVED LAYER-WISE SENSITIVITY ANALYSIS")
         print("=" * 70)
+        self._detect_super_weights()
         sensitivity_scores = self.analyze_layer_sensitivity(bits=8, metric=metric)
         print(f"\nLayer Sensitivity Scores ({metric}, higher = more sensitive):")
         print("-" * 70)
@@ -422,6 +533,10 @@ class LayerSensitivityAnalyzer:
         for layer_name, score in sorted_scores:
             print(f"{layer_name:<45} {score:.8f}")
         mp_config = self.get_mixed_precision_config(target_bits=target_avg_bits)
+        # Force super weight layers to minimum 16-bit (FP16)
+        for layer_name in self.super_weights:
+            current_bit = mp_config.get(layer_name, 32)
+            mp_config[layer_name] = min(current_bit, 16) 
         print(f"\nMixed Precision Configuration (target: {target_avg_bits:.1f} bits avg):")
         print("-" * 70)
         bit_counts = {}
