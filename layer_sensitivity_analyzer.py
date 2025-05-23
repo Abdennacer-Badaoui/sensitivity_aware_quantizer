@@ -10,6 +10,7 @@ import os
 import json
 from utils import get_model_size_mb
 
+
 class LayerSensitivityAnalyzer:
     def __init__(
         self,
@@ -24,28 +25,45 @@ class LayerSensitivityAnalyzer:
         dataset_config: str = "wikitext-2-raw-v1",
     ):
         self.model_name = model_name
-        self.device = torch.device("cuda" if torch.cuda.is_available() and device != "cpu" else "cpu")
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() and device != "cpu" else "cpu"
+        )
         print(f"Loading model {model_name}...")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float32,
-            device_map=None
+            model_name, torch_dtype=torch.float32, device_map=None
         ).to(self.device)
         self.model.eval()
         self.batch_size = batch_size
         self.calibration_data = calibration_data or self._prepare_hf_dataset(
-            split="train", num_samples=calibration_num_samples, dataset_name=dataset_name, dataset_config=dataset_config, split_name="calibration"
+            split="train",
+            num_samples=calibration_num_samples,
+            dataset_name=dataset_name,
+            dataset_config=dataset_config,
+            split_name="calibration",
         )
         self.eval_data = eval_data or self._prepare_hf_dataset(
-            split="validation", num_samples=eval_num_samples, dataset_name=dataset_name, dataset_config=dataset_config, split_name="evaluation"
+            split="validation",
+            num_samples=eval_num_samples,
+            dataset_name=dataset_name,
+            dataset_config=dataset_config,
+            split_name="evaluation",
         )
         self.sensitivity_scores = {}
 
-    def _prepare_hf_dataset(self, split: str, num_samples: int, dataset_name: str, dataset_config: str, split_name: str):
-        print(f"Preparing {split_name} data from HuggingFace dataset: {dataset_name}/{dataset_config} [{split}] ...")
+    def _prepare_hf_dataset(
+        self,
+        split: str,
+        num_samples: int,
+        dataset_name: str,
+        dataset_config: str,
+        split_name: str,
+    ):
+        print(
+            f"Preparing {split_name} data from HuggingFace dataset: {dataset_name}/{dataset_config} [{split}] ..."
+        )
         dataset = load_dataset(dataset_name, dataset_config, split=split)
         texts = []
         for example in dataset:
@@ -57,30 +75,33 @@ class LayerSensitivityAnalyzer:
         if len(texts) < num_samples:
             print(f"Warning: Only {len(texts)} samples found for {split_name}.")
         encoded = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=256,
-            return_tensors="pt"
+            texts, padding=True, truncation=True, max_length=256, return_tensors="pt"
         )
         return {
             "input_ids": encoded["input_ids"].to(self.device),
-            "attention_mask": encoded["attention_mask"].to(self.device)
+            "attention_mask": encoded["attention_mask"].to(self.device),
         }
 
     def _get_layer_modules(self):
         layers = {}
         for name, module in self.model.named_modules():
-            #if ("transformer.h." in name and any(x in name for x in [".c_attn", ".c_proj", ".c_fc"])) or \
-                #"lm_head" in name:
-            #layers[name] = module
+            # if ("transformer.h." in name and any(x in name for x in [".c_attn", ".c_proj", ".c_fc"])) or \
+            # "lm_head" in name:
+            # layers[name] = module
 
             # Only include layers that have weights
-            if hasattr(module, 'weight') and isinstance(module.weight, torch.Tensor) and "lm_head" not in name and "ln_f" not in name:
+            if (
+                hasattr(module, "weight")
+                and isinstance(module.weight, torch.Tensor)
+                and "lm_head" not in name
+                and "ln_f" not in name
+            ):
                 layers[name] = module
         return layers
 
-    def _symmetric_quantize(self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True):
+    def _symmetric_quantize(
+        self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True
+    ):
         if bits == 32:
             return tensor
         if per_channel and tensor.dim() >= 2:
@@ -91,7 +112,9 @@ class LayerSensitivityAnalyzer:
             axis = None
             shape_for_scale = [1] * tensor.dim()
         if axis is not None:
-            abs_max = tensor.abs().amax(dim=tuple(i for i in range(tensor.dim()) if i != axis), keepdim=True)
+            abs_max = tensor.abs().amax(
+                dim=tuple(i for i in range(tensor.dim()) if i != axis), keepdim=True
+            )
         else:
             abs_max = tensor.abs().max()
         eps = 1e-8
@@ -102,12 +125,16 @@ class LayerSensitivityAnalyzer:
         dequantized = quantized * scale
         return dequantized
 
-    def _quantize_layer(self, layer: nn.Module, bits: int = 8, preserve_magnitude: bool = False):
-        if not hasattr(layer, 'weight'):
+    def _quantize_layer(
+        self, layer: nn.Module, bits: int = 8, preserve_magnitude: bool = False
+    ):
+        if not hasattr(layer, "weight"):
             return layer
         quantized_layer = copy.deepcopy(layer)
         original_weight = layer.weight.data
-        quantized_weight = self._symmetric_quantize(original_weight, bits, per_channel=True)
+        quantized_weight = self._symmetric_quantize(
+            original_weight, bits, per_channel=True
+        )
         if preserve_magnitude:
             original_norm = torch.norm(original_weight)
             quantized_norm = torch.norm(quantized_weight)
@@ -115,7 +142,7 @@ class LayerSensitivityAnalyzer:
                 scale_factor = original_norm / quantized_norm
                 quantized_weight = quantized_weight * scale_factor
         quantized_layer.weight.data = quantized_weight
-        if hasattr(layer, 'bias') and layer.bias is not None:
+        if hasattr(layer, "bias") and layer.bias is not None:
             bias_bits = min(bits + 4, 16)
             quantized_layer.bias.data = self._symmetric_quantize(
                 layer.bias.data, bias_bits, per_channel=False
@@ -126,23 +153,30 @@ class LayerSensitivityAnalyzer:
         print("Computing activation statistics...")
         activations = {}
         hooks = []
+
         def get_activation_hook(name):
             def hook(module, input, output):
                 if isinstance(output, torch.Tensor):
                     activations[name] = output.detach()
                 elif isinstance(output, tuple) and len(output) > 0:
                     activations[name] = output[0].detach()
+
             return hook
+
         layers = self._get_layer_modules()
         for name, module in layers.items():
             hook = module.register_forward_hook(get_activation_hook(name))
             hooks.append(hook)
         with torch.no_grad():
             for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
-                end_idx = min(i + self.batch_size, len(self.calibration_data["input_ids"]))
+                end_idx = min(
+                    i + self.batch_size, len(self.calibration_data["input_ids"])
+                )
                 batch_inputs = {
                     "input_ids": self.calibration_data["input_ids"][i:end_idx],
-                    "attention_mask": self.calibration_data["attention_mask"][i:end_idx]
+                    "attention_mask": self.calibration_data["attention_mask"][
+                        i:end_idx
+                    ],
                 }
                 outputs = self.model(**batch_inputs)
         for hook in hooks:
@@ -150,9 +184,9 @@ class LayerSensitivityAnalyzer:
         stats = {}
         for name, activation in activations.items():
             stats[name] = {
-                'mean': activation.mean().item(),
-                'std': activation.std().item(),
-                'magnitude': activation.norm().item()
+                "mean": activation.mean().item(),
+                "std": activation.std().item(),
+                "magnitude": activation.norm().item(),
             }
         return stats
 
@@ -163,54 +197,66 @@ class LayerSensitivityAnalyzer:
         layers = self._get_layer_modules()
         sensitivity_scores = {}
         from tqdm import tqdm
+
         for layer_name, layer_module in tqdm(layers.items(), desc="Analyzing layers"):
             model_copy = copy.deepcopy(self.model)
-            self._replace_layer_in_model(model_copy, layer_name, 
-                                       self._quantize_layer(layer_module, bits))
+            self._replace_layer_in_model(
+                model_copy, layer_name, self._quantize_layer(layer_module, bits)
+            )
             quantized_outputs = self._compute_quantized_detailed(model_copy)
             scores = {}
-            for baseline_batch, quantized_batch in zip(baseline_outputs, quantized_outputs):
+            for baseline_batch, quantized_batch in zip(
+                baseline_outputs, quantized_outputs
+            ):
                 baseline_logits = baseline_batch["logits"]
                 quantized_logits = quantized_batch["logits"]
                 if metric == "jsd" or metric == "all":
                     baseline_probs = torch.softmax(baseline_logits / 1.0, dim=-1)
                     quantized_probs = torch.softmax(quantized_logits / 1.0, dim=-1)
-                    
+
                     # Ensure probabilities are properly normalized and add small epsilon
                     eps = 1e-10
                     baseline_probs = baseline_probs + eps
                     quantized_probs = quantized_probs + eps
-                    baseline_probs = baseline_probs / baseline_probs.sum(dim=-1, keepdim=True)
-                    quantized_probs = quantized_probs / quantized_probs.sum(dim=-1, keepdim=True)
-                    
+                    baseline_probs = baseline_probs / baseline_probs.sum(
+                        dim=-1, keepdim=True
+                    )
+                    quantized_probs = quantized_probs / quantized_probs.sum(
+                        dim=-1, keepdim=True
+                    )
+
                     # Calculate Jensen-Shannon Divergence
                     m = 0.5 * (baseline_probs + quantized_probs)
-                    
+
                     # Manual KL divergence calculation
-                    kl_p_m = torch.sum(baseline_probs * torch.log(baseline_probs / m), dim=-1)
-                    kl_q_m = torch.sum(quantized_probs * torch.log(quantized_probs / m), dim=-1)
-                    
+                    kl_p_m = torch.sum(
+                        baseline_probs * torch.log(baseline_probs / m), dim=-1
+                    )
+                    kl_q_m = torch.sum(
+                        quantized_probs * torch.log(quantized_probs / m), dim=-1
+                    )
+
                     # JSD is the average of the two KL divergences, then averaged across all positions
                     jsd = 0.5 * (kl_p_m + kl_q_m).mean().item()
-                    
+
                     # Normalize JSD by log(2) to get a value between 0 and 1
                     normalized_jsd = jsd / math.log(2)
-                    scores['jsd'] = scores.get('jsd', []) + [normalized_jsd]
+                    scores["jsd"] = scores.get("jsd", []) + [normalized_jsd]
                 if metric == "cosine" or metric == "all":
                     cos_sim = torch.nn.functional.cosine_similarity(
-                        baseline_logits.flatten(),
-                        quantized_logits.flatten(),
-                        dim=0
+                        baseline_logits.flatten(), quantized_logits.flatten(), dim=0
                     )
-                    scores['cosine'] = scores.get('cosine', []) + [1 - cos_sim.item()]
+                    scores["cosine"] = scores.get("cosine", []) + [1 - cos_sim.item()]
                 if metric == "mse" or metric == "all":
-                    mse = torch.nn.functional.mse_loss(baseline_logits, quantized_logits).item()
+                    mse = torch.nn.functional.mse_loss(
+                        baseline_logits, quantized_logits
+                    ).item()
                     baseline_mag = baseline_logits.norm().item()
-                    normalized_mse = mse / (baseline_mag ** 2 + 1e-8)
-                    scores['mse'] = scores.get('mse', []) + [normalized_mse]
+                    normalized_mse = mse / (baseline_mag**2 + 1e-8)
+                    scores["mse"] = scores.get("mse", []) + [normalized_mse]
             if metric == "all":
                 final_score = 0
-                weights = {'jsd': 0.5, 'cosine': 0.3, 'mse': 0.2}
+                weights = {"jsd": 0.5, "cosine": 0.3, "mse": 0.2}
                 for metric_name, weight in weights.items():
                     if metric_name in scores:
                         final_score += weight * np.mean(scores[metric_name])
@@ -220,11 +266,15 @@ class LayerSensitivityAnalyzer:
             # Normalize activation magnitude to [0,1] range
             if layer_name in activation_stats:
                 # Get the maximum activation magnitude across all layers for normalization
-                max_magnitude = max(stat['magnitude'] for stat in activation_stats.values())
-                normalized_magnitude = activation_stats[layer_name]['magnitude'] / max_magnitude
+                max_magnitude = max(
+                    stat["magnitude"] for stat in activation_stats.values()
+                )
+                normalized_magnitude = (
+                    activation_stats[layer_name]["magnitude"] / max_magnitude
+                )
                 # Apply a small boost to the score based on normalized magnitude
-                sensitivity_scores[layer_name] *= (1.0 + 0.5 * normalized_magnitude)
-            
+                sensitivity_scores[layer_name] *= 1.0 + 0.5 * normalized_magnitude
+
             del model_copy
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -235,91 +285,98 @@ class LayerSensitivityAnalyzer:
         baseline_outputs = []
         with torch.no_grad():
             for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
-                end_idx = min(i + self.batch_size, len(self.calibration_data["input_ids"]))
+                end_idx = min(
+                    i + self.batch_size, len(self.calibration_data["input_ids"])
+                )
                 batch_inputs = {
                     "input_ids": self.calibration_data["input_ids"][i:end_idx],
-                    "attention_mask": self.calibration_data["attention_mask"][i:end_idx]
+                    "attention_mask": self.calibration_data["attention_mask"][
+                        i:end_idx
+                    ],
                 }
                 outputs = self.model(**batch_inputs)
-                baseline_outputs.append({
-                    "logits": outputs.logits.cpu(),
-                    "last_hidden_state": outputs.last_hidden_state.cpu() if hasattr(outputs, 'last_hidden_state') else None
-                })
+                baseline_outputs.append(
+                    {
+                        "logits": outputs.logits.cpu(),
+                        "last_hidden_state": outputs.last_hidden_state.cpu()
+                        if hasattr(outputs, "last_hidden_state")
+                        else None,
+                    }
+                )
         return baseline_outputs
 
     def _compute_quantized_detailed(self, quantized_model):
         quantized_outputs = []
         with torch.no_grad():
             for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
-                end_idx = min(i + self.batch_size, len(self.calibration_data["input_ids"]))
+                end_idx = min(
+                    i + self.batch_size, len(self.calibration_data["input_ids"])
+                )
                 batch_inputs = {
                     "input_ids": self.calibration_data["input_ids"][i:end_idx],
-                    "attention_mask": self.calibration_data["attention_mask"][i:end_idx]
+                    "attention_mask": self.calibration_data["attention_mask"][
+                        i:end_idx
+                    ],
                 }
                 outputs = quantized_model(**batch_inputs)
-                quantized_outputs.append({
-                    "logits": outputs.logits.cpu(),
-                    "last_hidden_state": outputs.last_hidden_state.cpu() if hasattr(outputs, 'last_hidden_state') else None
-                })
+                quantized_outputs.append(
+                    {
+                        "logits": outputs.logits.cpu(),
+                        "last_hidden_state": outputs.last_hidden_state.cpu()
+                        if hasattr(outputs, "last_hidden_state")
+                        else None,
+                    }
+                )
         return quantized_outputs
 
     def _replace_layer_in_model(self, model, layer_name, new_layer):
-        parts = layer_name.split('.')
+        parts = layer_name.split(".")
         current = model
         for part in parts[:-1]:
             current = getattr(current, part)
         setattr(current, parts[-1], new_layer)
 
-    def get_mixed_precision_config(self, 
-                             target_bits: float = 6.0,
-                             bit_options: list = None):
+    def get_mixed_precision_config(
+        self, target_bits: float = 6.0, bit_options: list = None
+    ):
         if bit_options is None:
-            bit_options = [32, 16, 8, 4]  # Default options including 32-bit
-        else:
-            # Ensure we have at least the minimum bit and 32-bit option
-            bit_options = sorted(list(set(bit_options + [32])), reverse=True)
+            bit_options = [16, 8, 4]  
         
         # Sort layers by sensitivity (most sensitive first)
-        sorted_layers = sorted(self.sensitivity_scores.items(), 
-                            key=lambda x: x[1], reverse=True)
+        sorted_layers = sorted(
+            self.sensitivity_scores.items(), key=lambda x: x[1], reverse=True
+        )
         n_layers = len(sorted_layers)
-        
+
         # Initialize all layers with minimum bit
         min_bit = min(bit_options)
         config = {layer: min_bit for layer, _ in sorted_layers}
         current_total = min_bit * n_layers
         target_total = target_bits * n_layers
-        
+
         # Sort bit options descending for priority checking
         sorted_bits = sorted(bit_options, reverse=True)
-        
-        # First pass: Assign 32-bit to top 5% most sensitive layers
-        top_sensitive_count = max(1, int(n_layers * 0.05))  # At least 1 layer
-        for i, (layer_name, _) in enumerate(sorted_layers):
-            if i < top_sensitive_count:
-                config[layer_name] = 32
-                current_total += (32 - min_bit)
-        
-        # Second pass: Distribute remaining bits
+
+        # Distribute bits
         for layer_name, _ in sorted_layers:
             if current_total >= target_total:
                 break
-                
+
             current_bit = config[layer_name]
             remaining_budget = target_total - current_total
-            
+
             # Try highest bits first
             for bit in sorted_bits:
                 if bit <= current_bit:
                     continue
-                    
+
                 bit_increase = bit - current_bit
                 if bit_increase <= remaining_budget:
                     # Apply upgrade
                     config[layer_name] = bit
                     current_total += bit_increase
                     break
-        
+
         return config
 
     def apply_mixed_precision(self, config: Dict[str, int]):
@@ -329,16 +386,18 @@ class LayerSensitivityAnalyzer:
             # Skip empty layer names
             if not layer_name.strip():
                 continue
-                
+
             try:
-                parts = layer_name.split('.')
+                parts = layer_name.split(".")
                 current = self.model
                 for part in parts:
                     if not part:  # Skip empty parts
                         continue
                     current = getattr(current, part)
                 quantized_layer = self._quantize_layer(current, bits)
-                self._replace_layer_in_model(quantized_model, layer_name, quantized_layer)
+                self._replace_layer_in_model(
+                    quantized_model, layer_name, quantized_layer
+                )
             except Exception as e:
                 print(f"Warning: Could not quantize layer {layer_name}: {str(e)}")
                 continue
@@ -347,17 +406,19 @@ class LayerSensitivityAnalyzer:
     def evaluate_model(self, model, num_samples: int = 30):
         try:
             from torch.nn import CrossEntropyLoss
-            
+
             # Prepare evaluation texts
             eval_texts = []
             for i in range(min(num_samples, len(self.eval_data["input_ids"]))):
-                text = self.tokenizer.decode(self.eval_data["input_ids"][i], skip_special_tokens=True)
+                text = self.tokenizer.decode(
+                    self.eval_data["input_ids"][i], skip_special_tokens=True
+                )
                 if len(text.strip()) > 0:
                     eval_texts.append(text)
-            
+
             if not eval_texts:
                 raise ValueError("No valid evaluation texts were found.")
-            
+
             # Tokenize texts
             encodings = self.tokenizer(
                 eval_texts,
@@ -366,50 +427,53 @@ class LayerSensitivityAnalyzer:
                 truncation=True,
                 max_length=model.config.max_position_embeddings,
                 return_tensors="pt",
-                return_attention_mask=True
+                return_attention_mask=True,
             ).to(self.device)
-            
+
             encoded_texts = encodings["input_ids"]
             attn_masks = encodings["attention_mask"]
-            
+
             # Initialize loss function
             loss_fct = CrossEntropyLoss(reduction="none")
             total_loss = 0
             total_tokens = 0
-            
+
             # Process in batches
             batch_size = 1  # Process one text at a time for stability
             for start_index in range(0, len(encoded_texts), batch_size):
                 end_index = min(start_index + batch_size, len(encoded_texts))
                 encoded_batch = encoded_texts[start_index:end_index]
                 attn_mask = attn_masks[start_index:end_index]
-                
+
                 with torch.no_grad():
                     outputs = model(encoded_batch, attention_mask=attn_mask)
                     logits = outputs.logits
-                
+
                 # Shift logits and labels for next-token prediction
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = encoded_batch[..., 1:].contiguous()
                 shift_attention_mask = attn_mask[..., 1:].contiguous()
-                
+
                 # Calculate loss
-                loss = loss_fct(shift_logits.transpose(1, 2), shift_labels) * shift_attention_mask
+                loss = (
+                    loss_fct(shift_logits.transpose(1, 2), shift_labels)
+                    * shift_attention_mask
+                )
                 total_loss += loss.sum().item()
                 total_tokens += shift_attention_mask.sum().item()
-            
+
             # Calculate final perplexity
             if total_tokens > 0:
                 avg_loss = total_loss / total_tokens
                 perplexity = torch.exp(torch.tensor(avg_loss)).item()
             else:
-                perplexity = float('inf')
-            
+                perplexity = float("inf")
+
             return perplexity
-            
+
         except Exception as e:
             print(f"Error during evaluation: {e}")
-            return float('inf')
+            return float("inf")
 
     def run_full_analysis(self, target_avg_bits: float = 6.0, metric: str = "jsd"):
         print("=" * 70)
@@ -418,11 +482,15 @@ class LayerSensitivityAnalyzer:
         sensitivity_scores = self.analyze_layer_sensitivity(bits=8, metric=metric)
         print(f"\nLayer Sensitivity Scores ({metric}, higher = more sensitive):")
         print("-" * 70)
-        sorted_scores = sorted(sensitivity_scores.items(), key=lambda x: x[1], reverse=True)
+        sorted_scores = sorted(
+            sensitivity_scores.items(), key=lambda x: x[1], reverse=True
+        )
         for layer_name, score in sorted_scores:
             print(f"{layer_name:<45} {score:.8f}")
         mp_config = self.get_mixed_precision_config(target_bits=target_avg_bits)
-        print(f"\nMixed Precision Configuration (target: {target_avg_bits:.1f} bits avg):")
+        print(
+            f"\nMixed Precision Configuration (target: {target_avg_bits:.1f} bits avg):"
+        )
         print("-" * 70)
         bit_counts = {}
         for layer_name, bits in mp_config.items():
@@ -444,19 +512,23 @@ class LayerSensitivityAnalyzer:
             print(f"Original Model Perplexity:      {original_ppl:.4f}")
         except Exception as e:
             print(f"Error computing original model metrics: {e}")
-            original_ppl = float('inf')
+            original_ppl = float("inf")
             original_size = 0
             print(f"Original Model Size:            Failed to compute")
             print(f"Original Model Perplexity:      Failed to compute")
         try:
             quantized_ppl = self.evaluate_model(quantized_model)
-            quantized_size = get_model_size_mb(quantized_model, mp_config)  # Pass bit configuration
+            quantized_size = get_model_size_mb(
+                quantized_model, mp_config
+            )  # Pass bit configuration
             print(f"Quantized Model Size:           {quantized_size:.2f} MB")
             print(f"Mixed Precision Perplexity:     {quantized_ppl:.4f}")
-            if original_ppl != float('inf') and quantized_ppl != float('inf'):
+            if original_ppl != float("inf") and quantized_ppl != float("inf"):
                 degradation = quantized_ppl - original_ppl
                 rel_degradation = (quantized_ppl / original_ppl - 1) * 100
-                size_reduction = ((original_size - quantized_size) / original_size) * 100
+                size_reduction = (
+                    (original_size - quantized_size) / original_size
+                ) * 100
                 print(f"Perplexity Degradation:         {degradation:.4f}")
                 print(f"Relative Degradation:           {rel_degradation:.2f}%")
                 print(f"Size Reduction:                 {size_reduction:.2f}%")
@@ -464,19 +536,23 @@ class LayerSensitivityAnalyzer:
                 print(f"Degradation analysis:           Not available")
         except Exception as e:
             print(f"Error computing quantized model metrics: {e}")
-            quantized_ppl = float('inf')
+            quantized_ppl = float("inf")
             quantized_size = 0
             print(f"Quantized Model Size:           Failed to compute")
             print(f"Mixed Precision Perplexity:     Failed to compute")
         results = {
             "sensitivity_scores": sensitivity_scores,
             "mixed_precision_config": mp_config,
-            "original_perplexity": original_ppl if original_ppl != float('inf') else None,
-            "quantized_perplexity": quantized_ppl if quantized_ppl != float('inf') else None,
+            "original_perplexity": original_ppl
+            if original_ppl != float("inf")
+            else None,
+            "quantized_perplexity": quantized_ppl
+            if quantized_ppl != float("inf")
+            else None,
             "original_model_size_mb": original_size,
             "quantized_model_size_mb": quantized_size,
             "target_avg_bits": target_avg_bits,
             "actual_avg_bits": actual_avg_bits,
-            "bit_distribution": bit_counts
+            "bit_distribution": bit_counts,
         }
-        return results 
+        return results
