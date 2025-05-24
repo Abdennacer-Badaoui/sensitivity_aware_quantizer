@@ -8,6 +8,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 import os
 import json
+from reporter import run_full_analysis_report
 from utils import get_model_size_mb
 
 
@@ -24,6 +25,7 @@ class LayerSensitivityAnalyzer:
         dataset_name: str = "wikitext",
         dataset_config: str = "wikitext-2-raw-v1",
     ):
+        """Initialize the analyzer with model and dataset configuration."""
         self.model_name = model_name
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() and device != "cpu" else "cpu"
@@ -61,6 +63,7 @@ class LayerSensitivityAnalyzer:
         dataset_config: str,
         split_name: str,
     ):
+        """Prepare and tokenize dataset samples from HuggingFace datasets."""
         print(
             f"Preparing {split_name} data from HuggingFace dataset: {dataset_name}/{dataset_config} [{split}] ..."
         )
@@ -83,6 +86,7 @@ class LayerSensitivityAnalyzer:
         }
 
     def _get_layer_modules(self):
+        """Extract all quantizable layer modules from the model."""
         layers = {}
         for name, module in self.model.named_modules():
             # if ("transformer.h." in name and any(x in name for x in [".c_attn", ".c_proj", ".c_fc"])) or \
@@ -99,11 +103,17 @@ class LayerSensitivityAnalyzer:
                 layers[name] = module
         return layers
 
-    def _symmetric_quantize(
-        self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True
+    def _quantize(
+        self,
+        tensor: torch.Tensor,
+        bits: int = 8,
+        per_channel: bool = True,
+        symmetric: bool = True,
     ):
+        """Quantize a tensor to specified bit precision using symmetric or asymmetric quantization."""
         if bits == 32:
             return tensor
+
         if per_channel and tensor.dim() >= 2:
             axis = 0
             shape_for_scale = [1] * tensor.dim()
@@ -111,12 +121,34 @@ class LayerSensitivityAnalyzer:
         else:
             axis = None
             shape_for_scale = [1] * tensor.dim()
+
+        if symmetric:
+            return self._symmetric_quantize(tensor, bits, per_channel)
+        else:
+            return self._asymmetric_quantize(tensor, bits, per_channel)
+
+    def _symmetric_quantize(
+        self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True
+    ):
+        """Perform symmetric quantization on a tensor to specified bit precision."""
+        if bits == 32:
+            return tensor
+
+        if per_channel and tensor.dim() >= 2:
+            axis = 0
+            shape_for_scale = [1] * tensor.dim()
+            shape_for_scale[axis] = tensor.shape[axis]
+        else:
+            axis = None
+            shape_for_scale = [1] * tensor.dim()
+
         if axis is not None:
             abs_max = tensor.abs().amax(
                 dim=tuple(i for i in range(tensor.dim()) if i != axis), keepdim=True
             )
         else:
             abs_max = tensor.abs().max()
+
         eps = 1e-8
         abs_max = torch.clamp(abs_max, min=eps)
         qmax = 2 ** (bits - 1) - 1
@@ -125,9 +157,44 @@ class LayerSensitivityAnalyzer:
         dequantized = quantized * scale
         return dequantized
 
+    def _asymmetric_quantize(
+        self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True
+    ):
+        """Perform asymmetric quantization on a tensor to specified bit precision."""
+        if bits == 32:
+            return tensor
+
+        if per_channel and tensor.dim() >= 2:
+            axis = 0
+            shape_for_scale = [1] * tensor.dim()
+            shape_for_scale[axis] = tensor.shape[axis]
+        else:
+            axis = None
+            shape_for_scale = [1] * tensor.dim()
+
+        if axis is not None:
+            min_val = tensor.amin(
+                dim=tuple(i for i in range(tensor.dim()) if i != axis), keepdim=True
+            )
+            max_val = tensor.amax(
+                dim=tuple(i for i in range(tensor.dim()) if i != axis), keepdim=True
+            )
+        else:
+            min_val = tensor.min()
+            max_val = tensor.max()
+
+        eps = 1e-8
+        scale = (max_val - min_val) / (2**bits - 1)
+        scale = torch.clamp(scale, min=eps)
+        zero_point = torch.round(-min_val / scale)
+        quantized = torch.round(tensor / scale + zero_point).clamp(0, 2**bits - 1)
+        dequantized = (quantized - zero_point) * scale
+        return dequantized
+
     def _quantize_layer(
         self, layer: nn.Module, bits: int = 8, preserve_magnitude: bool = False
     ):
+        """Quantize a neural network layer's weights and biases to specified bit precision."""
         if not hasattr(layer, "weight"):
             return layer
         quantized_layer = copy.deepcopy(layer)
@@ -150,6 +217,7 @@ class LayerSensitivityAnalyzer:
         return quantized_layer
 
     def _compute_activation_statistics(self):
+        """Compute mean, std, and magnitude statistics for layer activations."""
         print("Computing activation statistics...")
         activations = {}
         hooks = []
@@ -191,6 +259,7 @@ class LayerSensitivityAnalyzer:
         return stats
 
     def analyze_layer_sensitivity(self, bits: int = 8, metric: str = "jsd"):
+        """Analyze the sensitivity of each layer to quantization using specified metric."""
         print(f"Analyzing layer sensitivity with {bits}-bit quantization...")
         baseline_outputs = self._compute_baseline_detailed()
         activation_stats = self._compute_activation_statistics()
@@ -282,6 +351,7 @@ class LayerSensitivityAnalyzer:
         return sensitivity_scores
 
     def _compute_baseline_detailed(self):
+        """Compute and store detailed outputs from the original model."""
         baseline_outputs = []
         with torch.no_grad():
             for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
@@ -306,6 +376,7 @@ class LayerSensitivityAnalyzer:
         return baseline_outputs
 
     def _compute_quantized_detailed(self, quantized_model):
+        """Compute and store detailed outputs from the quantized model."""
         quantized_outputs = []
         with torch.no_grad():
             for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
@@ -330,6 +401,7 @@ class LayerSensitivityAnalyzer:
         return quantized_outputs
 
     def _replace_layer_in_model(self, model, layer_name, new_layer):
+        """Replace a layer in the model with a new layer instance."""
         parts = layer_name.split(".")
         current = model
         for part in parts[:-1]:
@@ -339,9 +411,10 @@ class LayerSensitivityAnalyzer:
     def get_mixed_precision_config(
         self, target_bits: float = 6.0, bit_options: list = None
     ):
+        """Generate mixed precision configuration based on layer sensitivity scores."""
         if bit_options is None:
-            bit_options = [16, 8, 4]  
-        
+            bit_options = [16, 8, 4]
+
         # Sort layers by sensitivity (most sensitive first)
         sorted_layers = sorted(
             self.sensitivity_scores.items(), key=lambda x: x[1], reverse=True
@@ -380,6 +453,7 @@ class LayerSensitivityAnalyzer:
         return config
 
     def apply_mixed_precision(self, config: Dict[str, int]):
+        """Apply mixed precision quantization to the model based on the provided configuration."""
         print("Applying mixed precision quantization...")
         quantized_model = copy.deepcopy(self.model)
         for layer_name, bits in config.items():
@@ -404,6 +478,7 @@ class LayerSensitivityAnalyzer:
         return quantized_model
 
     def evaluate_model(self, model, num_samples: int = 30):
+        """Evaluate model performance using perplexity on evaluation samples."""
         try:
             from torch.nn import CrossEntropyLoss
 
@@ -476,83 +551,30 @@ class LayerSensitivityAnalyzer:
             return float("inf")
 
     def run_full_analysis(self, target_avg_bits: float = 6.0, metric: str = "jsd"):
-        print("=" * 70)
-        print("IMPROVED LAYER-WISE SENSITIVITY ANALYSIS")
-        print("=" * 70)
-        sensitivity_scores = self.analyze_layer_sensitivity(bits=8, metric=metric)
-        print(f"\nLayer Sensitivity Scores ({metric}, higher = more sensitive):")
-        print("-" * 70)
-        sorted_scores = sorted(
-            sensitivity_scores.items(), key=lambda x: x[1], reverse=True
+        """Run full analysis including sensitivity analysis, mixed precision configuration, and evaluation."""
+        sensitivity_scores = self.analyze_layer_sensitivity(
+            metric=metric
+        )  # analyze layer sensitivity
+        mp_config = self.get_mixed_precision_config(
+            target_bits=target_avg_bits
+        )  # get mixed precision config
+        original_ppl = self.evaluate_model(self.model)  # evaluate original model
+        original_size = get_model_size_mb(self.model)  # get original model size
+        quantized_model = self.apply_mixed_precision(
+            mp_config
+        )  # apply mixed precision quantization
+        quantized_ppl = self.evaluate_model(quantized_model)  # evaluate quantized model
+        quantized_size = get_model_size_mb(
+            quantized_model, mp_config
+        )  # get quantized model size
+
+        results = run_full_analysis_report(
+            sensitivity_scores,
+            mp_config,
+            original_ppl,
+            quantized_ppl,
+            original_size,
+            quantized_size,
         )
-        for layer_name, score in sorted_scores:
-            print(f"{layer_name:<45} {score:.8f}")
-        mp_config = self.get_mixed_precision_config(target_bits=target_avg_bits)
-        print(
-            f"\nMixed Precision Configuration (target: {target_avg_bits:.1f} bits avg):"
-        )
-        print("-" * 70)
-        bit_counts = {}
-        for layer_name, bits in mp_config.items():
-            bit_counts[bits] = bit_counts.get(bits, 0) + 1
-            sensitivity = sensitivity_scores[layer_name]
-            print(f"{layer_name:<45} {bits:2d} bits (sensitivity: {sensitivity:.8f})")
-        print(f"\nBit Distribution:")
-        for bits in sorted(bit_counts.keys(), reverse=True):
-            print(f"  {bits:2d} bits: {bit_counts[bits]:2d} layers")
-        actual_avg_bits = sum(mp_config.values()) / len(mp_config)
-        print(f"  Actual average: {actual_avg_bits:.2f} bits")
-        quantized_model = self.apply_mixed_precision(mp_config)
-        print(f"\nModel Evaluation:")
-        print("-" * 70)
-        try:
-            original_ppl = self.evaluate_model(self.model)
-            original_size = get_model_size_mb(self.model)  # Original model is 32-bit
-            print(f"Original Model Size:            {original_size:.2f} MB")
-            print(f"Original Model Perplexity:      {original_ppl:.4f}")
-        except Exception as e:
-            print(f"Error computing original model metrics: {e}")
-            original_ppl = float("inf")
-            original_size = 0
-            print(f"Original Model Size:            Failed to compute")
-            print(f"Original Model Perplexity:      Failed to compute")
-        try:
-            quantized_ppl = self.evaluate_model(quantized_model)
-            quantized_size = get_model_size_mb(
-                quantized_model, mp_config
-            )  # Pass bit configuration
-            print(f"Quantized Model Size:           {quantized_size:.2f} MB")
-            print(f"Mixed Precision Perplexity:     {quantized_ppl:.4f}")
-            if original_ppl != float("inf") and quantized_ppl != float("inf"):
-                degradation = quantized_ppl - original_ppl
-                rel_degradation = (quantized_ppl / original_ppl - 1) * 100
-                size_reduction = (
-                    (original_size - quantized_size) / original_size
-                ) * 100
-                print(f"Perplexity Degradation:         {degradation:.4f}")
-                print(f"Relative Degradation:           {rel_degradation:.2f}%")
-                print(f"Size Reduction:                 {size_reduction:.2f}%")
-            else:
-                print(f"Degradation analysis:           Not available")
-        except Exception as e:
-            print(f"Error computing quantized model metrics: {e}")
-            quantized_ppl = float("inf")
-            quantized_size = 0
-            print(f"Quantized Model Size:           Failed to compute")
-            print(f"Mixed Precision Perplexity:     Failed to compute")
-        results = {
-            "sensitivity_scores": sensitivity_scores,
-            "mixed_precision_config": mp_config,
-            "original_perplexity": original_ppl
-            if original_ppl != float("inf")
-            else None,
-            "quantized_perplexity": quantized_ppl
-            if quantized_ppl != float("inf")
-            else None,
-            "original_model_size_mb": original_size,
-            "quantized_model_size_mb": quantized_size,
-            "target_avg_bits": target_avg_bits,
-            "actual_avg_bits": actual_avg_bits,
-            "bit_distribution": bit_counts,
-        }
+
         return results

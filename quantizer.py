@@ -1,28 +1,112 @@
 import os
-import json
 import matplotlib.pyplot as plt
+import argparse
 from layer_sensitivity_analyzer import LayerSensitivityAnalyzer
 from utils import get_model_size_mb, save_json
 
 MODELS = [
     # "microsoft/DialoGPT-small",
-    #"gpt2",
-    #"distilbert/distilgpt2",
+    # "gpt2",
+    # "distilbert/distilgpt2",
     "EleutherAI/gpt-neo-125M",
-    #"facebook/opt-125M",
-    #"facebook/opt-355M",
+    # "facebook/opt-125M",
+    # "facebook/opt-355M",
 ]
 
 RESULTS_DIR = "results"
 PLOTS_DIR = "plots"
 
 
-def run_analysis_for_models(models, target_avg_bits=12.0, metric="jsd"):
+def parse_args():
+    parser = argparse.ArgumentParser(description="Model Quantization Analysis Tool")
+
+    # Model selection
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=["EleutherAI/gpt-neo-125M"],
+        help="List of model names to analyze",
+    )
+
+    # Data configuration
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="wikitext",
+        help="Dataset name for calibration and evaluation",
+    )
+    parser.add_argument(
+        "--dataset_config",
+        type=str,
+        default="wikitext-2-raw-v1",
+        help="Dataset configuration",
+    )
+    parser.add_argument(
+        "--calibration_samples",
+        type=int,
+        default=100,
+        help="Number of samples for calibration",
+    )
+    parser.add_argument(
+        "--eval_samples", type=int, default=100, help="Number of samples for evaluation"
+    )
+
+    # Quantization parameters
+    parser.add_argument(
+        "--target_bits",
+        type=float,
+        default=12.0,
+        help="Target average bits for mixed precision quantization",
+    )
+    parser.add_argument(
+        "--metric",
+        type=str,
+        default="jsd",
+        choices=["jsd", "cosine", "mse", "all"],
+        help="Metric to use for sensitivity analysis",
+    )
+
+    # Processing parameters
+    parser.add_argument(
+        "--batch_size", type=int, default=16, help="Batch size for processing"
+    )
+    parser.add_argument(
+        "--device", type=str, default="auto", help="Device to use (auto, cuda, or cpu)"
+    )
+
+    # Output configuration
+    parser.add_argument(
+        "--results_dir", type=str, default="results", help="Directory to save results"
+    )
+    parser.add_argument(
+        "--plots_dir", type=str, default="plots", help="Directory to save plots"
+    )
+
+    return parser.parse_args()
+
+
+def run_analysis_for_models(
+    models,
+    calibration_data=None,
+    eval_data=None,
+    calibration_num_samples=100,
+    eval_num_samples=100,
+    batch_size=16,
+    target_avg_bits=12.0,
+    metric="jsd",
+):
     all_results = {}
     for model_name in models:
         print(f"\n{'='*30}\nAnalyzing {model_name}\n{'='*30}")
         try:
-            analyzer = LayerSensitivityAnalyzer(model_name=model_name)
+            analyzer = LayerSensitivityAnalyzer(
+                model_name=model_name,
+                calibration_data=calibration_data,
+                eval_data=eval_data,
+                calibration_num_samples=calibration_num_samples,
+                eval_num_samples=eval_num_samples,
+                batch_size=batch_size,
+            )
 
             # Run analysis
             results = analyzer.run_full_analysis(
@@ -124,7 +208,7 @@ def plot_comparisons(all_results, target_avg_bits):
                 i, max(orig, quant) + 1, f"{reduction:.1f}%", ha="center", va="bottom"
             )
 
-    # Plot 2: Perplexity 
+    # Plot 2: Perplexity
     ax2.bar(
         [i - width / 2 for i in x],
         orig_ppl,
@@ -168,13 +252,28 @@ def plot_comparisons(all_results, target_avg_bits):
 
 
 def main():
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    target_avg_bits = 12.0
-    all_results = run_analysis_for_models(MODELS, target_avg_bits, metric="jsd")
+    args = parse_args()
+
+    # Create output directories
+    os.makedirs(args.results_dir, exist_ok=True)
+    os.makedirs(args.plots_dir, exist_ok=True)
+
+    # Run analysis
+    all_results = run_analysis_for_models(
+        models=args.models,
+        calibration_data=None,
+        eval_data=None,
+        calibration_num_samples=args.calibration_samples,
+        eval_num_samples=args.eval_samples,
+        batch_size=args.batch_size,
+        target_avg_bits=args.target_bits,
+        metric=args.metric,
+    )
+
     if all_results:
-        plot_comparisons(all_results, target_avg_bits)
+        plot_comparisons(all_results, args.target_bits)
         print(
-            f"\nAnalysis and visualizations complete. See {RESULTS_DIR} and {PLOTS_DIR}."
+            f"\nAnalysis and visualizations complete. See {args.results_dir} and {args.plots_dir}."
         )
     else:
         print("No results were generated. Check the errors above.")
