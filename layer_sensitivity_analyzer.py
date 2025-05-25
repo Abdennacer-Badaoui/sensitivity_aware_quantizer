@@ -567,6 +567,8 @@ class LayerSensitivityAnalyzer:
             quantized_ppl,
             original_size,
             quantized_size,
+            target_avg_bits,
+            metric,
         )
 
         return results

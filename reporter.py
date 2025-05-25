@@ -39,8 +39,8 @@ def run_full_analysis_report(
     quantized_ppl,
     original_size,
     quantized_size,
-    target_avg_bits: float = 6.0,
-    metric: str = "jsd",
+    target_avg_bits,
+    metric,
 ):
     """Run complete analysis including sensitivity analysis, mixed precision configuration, and evaluation."""
     print("=" * 70)
