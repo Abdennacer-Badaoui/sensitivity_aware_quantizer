@@ -68,7 +68,7 @@ def parse_args():
 
     # Processing parameters
     parser.add_argument(
-        "--batch_size", type=int, default=16, help="Batch size for processing"
+        "--batch_size", type=int, default=32, help="Batch size for processing"
     )
     parser.add_argument(
         "--device", type=str, default="auto", help="Device to use (auto, cuda, or cpu)"
@@ -91,7 +91,7 @@ def run_analysis_for_models(
     eval_data=None,
     calibration_num_samples=100,
     eval_num_samples=100,
-    batch_size=16,
+    batch_size=32,
     target_avg_bits=12.0,
     metric="jsd",
 ):

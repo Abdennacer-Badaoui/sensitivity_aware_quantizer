@@ -113,83 +113,75 @@ class LayerSensitivityAnalyzer:
         """Quantize a tensor to specified bit precision using symmetric or asymmetric quantization."""
         if bits == 32:
             return tensor
-
-        if per_channel and tensor.dim() >= 2:
-            axis = 0
-            shape_for_scale = [1] * tensor.dim()
-            shape_for_scale[axis] = tensor.shape[axis]
-        else:
-            axis = None
-            shape_for_scale = [1] * tensor.dim()
-
+        if bits == 16:
+            # Simulate float16 quantization but keep float32 storage
+            return tensor.to(torch.float16).to(torch.float32)
         if symmetric:
             return self._symmetric_quantize(tensor, bits, per_channel)
         else:
             return self._asymmetric_quantize(tensor, bits, per_channel)
 
     def _symmetric_quantize(
-        self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True
+        self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True, unsigned: bool = False
     ):
         """Perform symmetric quantization on a tensor to specified bit precision."""
-        if bits == 32:
-            return tensor
 
+        if unsigned:
+            qmin = 0
+            qmax = 2 ** bits - 1
+        else:
+            qmin = -2 ** (bits - 1)
+            qmax = 2 ** (bits - 1) - 1
         if per_channel and tensor.dim() >= 2:
             axis = 0
-            shape_for_scale = [1] * tensor.dim()
-            shape_for_scale[axis] = tensor.shape[axis]
+            out = torch.empty_like(tensor)
+            for i in range(tensor.shape[axis]):
+                slice_tensor = tensor[i]
+                max_val = slice_tensor.abs().max().item()
+                scale = max_val / ((qmax - qmin) / 2) if (qmax - qmin) != 0 else 1.0
+                zero_point = 0 if not unsigned else qmin
+                q_tensor = torch.round(slice_tensor / scale + zero_point)
+                q_tensor = torch.clamp(q_tensor, qmin, qmax)
+                out[i] = (q_tensor - zero_point) * scale
+            return out
         else:
-            axis = None
-            shape_for_scale = [1] * tensor.dim()
+            max_val = tensor.abs().max().item()
+            scale = max_val / ((qmax - qmin) / 2) if (qmax - qmin) != 0 else 1.0
+            zero_point = 0 if not unsigned else qmin
+            q_tensor = torch.round(tensor / scale + zero_point)
+            q_tensor = torch.clamp(q_tensor, qmin, qmax)
+            return (q_tensor - zero_point) * scale
 
-        if axis is not None:
-            abs_max = tensor.abs().amax(
-                dim=tuple(i for i in range(tensor.dim()) if i != axis), keepdim=True
-            )
+    def _asymmetric_quantize(self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True, unsigned: bool = False):
+        """Perform asymmetric quantization using only bits (no dtype/iinfo)."""
+
+        if unsigned:
+            qmin = 0
+            qmax = 2 ** bits - 1
         else:
-            abs_max = tensor.abs().max()
-
-        eps = 1e-8
-        abs_max = torch.clamp(abs_max, min=eps)
-        qmax = 2 ** (bits - 1) - 1
-        scale = abs_max / qmax
-        quantized = torch.round(tensor / scale).clamp(-qmax - 1, qmax)
-        dequantized = quantized * scale
-        return dequantized
-
-    def _asymmetric_quantize(
-        self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True
-    ):
-        """Perform asymmetric quantization on a tensor to specified bit precision."""
-        if bits == 32:
-            return tensor
-
+            qmin = -2 ** (bits - 1)
+            qmax = 2 ** (bits - 1) - 1
         if per_channel and tensor.dim() >= 2:
             axis = 0
-            shape_for_scale = [1] * tensor.dim()
-            shape_for_scale[axis] = tensor.shape[axis]
+            out = torch.empty_like(tensor)
+            for i in range(tensor.shape[axis]):
+                slice_tensor = tensor[i]
+                rmin, rmax = slice_tensor.min().item(), slice_tensor.max().item()
+                scale = (rmax - rmin) / (qmax - qmin) if (qmax - qmin) != 0 else 1.0
+                zero_point = qmin - rmin / scale if scale != 0 else 0
+                zero_point = int(round(zero_point))
+                q_tensor = torch.round(slice_tensor / scale + zero_point)
+                q_tensor = torch.clamp(q_tensor, qmin, qmax)
+                out[i] = (q_tensor - zero_point) * scale
+            return out
         else:
-            axis = None
-            shape_for_scale = [1] * tensor.dim()
-
-        if axis is not None:
-            min_val = tensor.amin(
-                dim=tuple(i for i in range(tensor.dim()) if i != axis), keepdim=True
-            )
-            max_val = tensor.amax(
-                dim=tuple(i for i in range(tensor.dim()) if i != axis), keepdim=True
-            )
-        else:
-            min_val = tensor.min()
-            max_val = tensor.max()
-
-        eps = 1e-8
-        scale = (max_val - min_val) / (2**bits - 1)
-        scale = torch.clamp(scale, min=eps)
-        zero_point = torch.round(-min_val / scale)
-        quantized = torch.round(tensor / scale + zero_point).clamp(0, 2**bits - 1)
-        dequantized = (quantized - zero_point) * scale
-        return dequantized
+            rmin, rmax = tensor.min().item(), tensor.max().item()
+            scale = (rmax - rmin) / (qmax - qmin) if (qmax - qmin) != 0 else 1.0
+            zero_point = qmin - rmin / scale if scale != 0 else 0
+            zero_point = int(round(zero_point))
+            q_tensor = torch.round(tensor / scale + zero_point)
+            q_tensor = torch.clamp(q_tensor, qmin, qmax)
+            return (q_tensor - zero_point) * scale
 
     def _quantize_layer(
         self, layer: nn.Module, bits: int = 8, preserve_magnitude: bool = False
@@ -199,8 +191,8 @@ class LayerSensitivityAnalyzer:
             return layer
         quantized_layer = copy.deepcopy(layer)
         original_weight = layer.weight.data
-        quantized_weight = self._symmetric_quantize(
-            original_weight, bits, per_channel=True
+        quantized_weight = self._quantize(
+            original_weight, bits, per_channel=True, symmetric=False
         )
         if preserve_magnitude:
             original_norm = torch.norm(original_weight)
@@ -211,8 +203,8 @@ class LayerSensitivityAnalyzer:
         quantized_layer.weight.data = quantized_weight
         if hasattr(layer, "bias") and layer.bias is not None:
             bias_bits = min(bits + 4, 16)
-            quantized_layer.bias.data = self._symmetric_quantize(
-                layer.bias.data, bias_bits, per_channel=False
+            quantized_layer.bias.data = self._quantize(
+                layer.bias.data, bias_bits, per_channel=False, symmetric=False
             )
         return quantized_layer
 
