@@ -133,17 +133,14 @@ class LayerSensitivityAnalyzer:
             qmin = -2 ** (bits - 1)
             qmax = 2 ** (bits - 1) - 1
         if per_channel and tensor.dim() >= 2:
-            axis = 0
-            out = torch.empty_like(tensor)
-            for i in range(tensor.shape[axis]):
-                slice_tensor = tensor[i]
-                max_val = slice_tensor.abs().max().item()
-                scale = max_val / ((qmax - qmin) / 2) if (qmax - qmin) != 0 else 1.0
-                zero_point = 0 if not unsigned else qmin
-                q_tensor = torch.round(slice_tensor / scale + zero_point)
-                q_tensor = torch.clamp(q_tensor, qmin, qmax)
-                out[i] = (q_tensor - zero_point) * scale
-            return out
+            dims = tuple(range(1, tensor.dim()))
+            max_vals = tensor.abs().amax(dim=dims, keepdim=True)
+            scale_denominator = (qmax - qmin) / 2
+            scale = max_vals / scale_denominator
+            zero_point = 0  # Symmetric quantization uses zero_point = 0
+            q_tensor = torch.round(tensor / scale + zero_point)
+            q_tensor = torch.clamp(q_tensor, qmin, qmax)
+            return (q_tensor - zero_point) * scale
         else:
             max_val = tensor.abs().max().item()
             scale = max_val / ((qmax - qmin) / 2) if (qmax - qmin) != 0 else 1.0
@@ -162,18 +159,24 @@ class LayerSensitivityAnalyzer:
             qmin = -2 ** (bits - 1)
             qmax = 2 ** (bits - 1) - 1
         if per_channel and tensor.dim() >= 2:
-            axis = 0
-            out = torch.empty_like(tensor)
-            for i in range(tensor.shape[axis]):
-                slice_tensor = tensor[i]
-                rmin, rmax = slice_tensor.min().item(), slice_tensor.max().item()
-                scale = (rmax - rmin) / (qmax - qmin) if (qmax - qmin) != 0 else 1.0
-                zero_point = qmin - rmin / scale if scale != 0 else 0
-                zero_point = int(round(zero_point))
-                q_tensor = torch.round(slice_tensor / scale + zero_point)
-                q_tensor = torch.clamp(q_tensor, qmin, qmax)
-                out[i] = (q_tensor - zero_point) * scale
-            return out
+            dims = tuple(range(1, tensor.dim()))
+            rmin = tensor.amin(dim=dims, keepdim=True)
+            rmax = tensor.amax(dim=dims, keepdim=True)
+            scale = (rmax - rmin) / (qmax - qmin)
+            valid_scale = scale != 0
+            zero_point = torch.where(
+                valid_scale,
+                qmin - (rmin / scale),
+                torch.tensor(0.0, device=tensor.device)
+            )
+            zero_point = zero_point.round().to(torch.int32)
+            q_tensor = torch.where(
+                valid_scale,
+                torch.round(tensor / scale + zero_point),
+                zero_point  # When scale=0, all values are rmin, quantized to zero_point
+            )
+            q_tensor = torch.clamp(q_tensor, qmin, qmax)
+            return (q_tensor - zero_point) * scale
         else:
             rmin, rmax = tensor.min().item(), tensor.max().item()
             scale = (rmax - rmin) / (qmax - qmin) if (qmax - qmin) != 0 else 1.0
