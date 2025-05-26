@@ -344,6 +344,9 @@ class LayerSensitivityAnalyzer:
 
     def _compute_baseline_detailed(self):
         """Compute and store detailed outputs from the original model."""
+        if hasattr(self, "_cached_baseline_outputs"):
+            return self._cached_baseline_outputs
+        
         baseline_outputs = []
         with torch.no_grad():
             for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
@@ -365,6 +368,8 @@ class LayerSensitivityAnalyzer:
                         else None,
                     }
                 )
+        # Cache the baseline outputs for later use
+        self._cached_baseline_outputs = baseline_outputs
         return baseline_outputs
 
     def _compute_quantized_detailed(self, quantized_model):
