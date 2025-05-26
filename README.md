@@ -8,9 +8,6 @@ A tool for analyzing and quantizing transformer models using sensitivity-aware m
 # Clone the repository
 git clone <repository-url>
 cd sensitivity_aware_quantizer
-
-# Install dependencies
-pip install -r requirements.txt
 ```
 
 ## Usage
@@ -19,7 +16,7 @@ The tool provides various command-line options to customize the quantization pro
 
 ### Basic Usage
 
-Run with default settings (uses EleutherAI/gpt-neo-125M model, 12.0 target bits, and JSD metric):
+Run with default settings (uses EleutherAI/gpt-neo-125M model, 12.0 target bits, and divergence-based methode):
 
 ```bash
 python quantizer.py
@@ -27,13 +24,13 @@ python quantizer.py
 
 ### Multiple Models Analysis
 
-Analyze multiple models with custom target bits and metric:
+Analyze multiple models with custom target bits and method:
 
 ```bash
 python quantizer.py \
     --models EleutherAI/gpt-neo-125M gpt2 \
     --target_bits 8.0 \
-    --metric jsd
+    --method divergence
 ```
 
 ### Custom Dataset Configuration
@@ -66,7 +63,7 @@ Complete example with all major parameters customized:
 python quantizer.py \
     --models EleutherAI/gpt-neo-125M \
     --target_bits 8.0 \
-    --metric all \
+    --method divergence \
     --batch_size 32 \
     --device cuda \
     --calibration_samples 150 \
@@ -83,7 +80,7 @@ python quantizer.py \
 | `--calibration_samples` | Number of samples for calibration | `100` |
 | `--eval_samples` | Number of samples for evaluation | `100` |
 | `--target_bits` | Target average bits for mixed precision | `12.0` |
-| `--metric` | Sensitivity analysis metric (`jsd`, `cosine`, `mse`, or `all`) | `"jsd"` |
+| `--method` | Sensitivity analysis method (`divergence`,`hessian`) | `"divergence"` |
 | `--batch_size` | Batch size for processing | `16` |
 | `--device` | Device to use (`auto`, `cuda`, or `cpu`) | `"auto"` |
 | `--results_dir` | Directory to save results | `"results"` |
