@@ -40,13 +40,13 @@ def run_full_analysis_report(
     original_size,
     quantized_size,
     target_avg_bits,
-    metric,
+    sensitivity_method,
 ):
     """Run complete analysis including sensitivity analysis, mixed precision configuration, and evaluation."""
     print("=" * 70)
     print("LAYER-WISE SENSITIVITY ANALYSIS")
     print("=" * 70)
-    print(f"\nLayer Sensitivity Scores ({metric}, higher = more sensitive):")
+    print(f"\nLayer Sensitivity Scores ({sensitivity_method}, higher = more sensitive):")
     print("-" * 70)
     sorted_scores = sorted(sensitivity_scores.items(), key=lambda x: x[1], reverse=True)
     for layer_name, score in sorted_scores:

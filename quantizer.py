@@ -58,12 +58,14 @@ def parse_args():
         default=12.0,
         help="Target average bits for mixed precision quantization",
     )
+
+    # Sensitivity analysis methods
     parser.add_argument(
-        "--metric",
+        "--sensitivity_method",
         type=str,
-        default="jsd",
-        choices=["jsd", "cosine", "mse", "all"],
-        help="Metric to use for sensitivity analysis",
+        default="divergence",
+        choices=["divergence", "hessian"],
+        help="Method for sensitivity analysis",
     )
 
     # Processing parameters
@@ -93,7 +95,7 @@ def run_analysis_for_models(
     eval_num_samples=100,
     batch_size=32,
     target_avg_bits=12.0,
-    metric="jsd",
+    sensitivity_method="divergence",
 ):
     all_results = {}
     for model_name in models:
@@ -110,11 +112,12 @@ def run_analysis_for_models(
 
             # Run analysis
             results = analyzer.run_full_analysis(
-                target_avg_bits=target_avg_bits, metric=metric
+                target_avg_bits=target_avg_bits, sensitivity_method=sensitivity_method
             )
 
             # Create results dictionary
             model_results = {
+                "model_name": model_name,
                 "original_perplexity": results.get("original_perplexity"),
                 "quantized_perplexity": results.get("quantized_perplexity"),
                 "original_model_size_mb": results.get("original_model_size_mb"),
@@ -151,7 +154,7 @@ def run_analysis_for_models(
     return all_results
 
 
-def plot_comparisons(all_results, target_avg_bits):
+def plot_comparisons(all_results, target_avg_bits, sensitivity_method):
     if not all_results:
         print("No results to plot!")
         return
@@ -247,7 +250,7 @@ def plot_comparisons(all_results, target_avg_bits):
     ax2.set_ylim(0, max(max(orig_ppl), max(quant_ppl)) * 1.2)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(PLOTS_DIR, f"model_comparison_{target_avg_bits}.png"))
+    plt.savefig(os.path.join(PLOTS_DIR, f"model_comparison_{target_avg_bits}_{sensitivity_method}.png"))
     plt.close()
 
 
@@ -267,11 +270,11 @@ def main():
         eval_num_samples=args.eval_samples,
         batch_size=args.batch_size,
         target_avg_bits=args.target_bits,
-        metric=args.metric,
+        sensitivity_method=args.sensitivity_method,
     )
 
     if all_results:
-        plot_comparisons(all_results, args.target_bits)
+        plot_comparisons(all_results, args.target_bits, args.sensitivity_method)
         print(
             f"\nAnalysis and visualizations complete. See {args.results_dir} and {args.plots_dir}."
         )
