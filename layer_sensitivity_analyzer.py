@@ -9,7 +9,7 @@ from datasets import load_dataset
 import os
 import json
 from reporter import run_full_analysis_report
-from utils import get_model_size_mb
+from model_utils import get_model_size_mb
 
 
 class LayerSensitivityAnalyzer:
