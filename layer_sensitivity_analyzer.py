@@ -9,7 +9,7 @@ from datasets import load_dataset
 import os
 import json
 from reporter import run_full_analysis_report
-from model_utils import get_model_size_mb
+from model_utils import evaluate_model, get_model_size_mb
 
 
 class LayerSensitivityAnalyzer:
@@ -53,6 +53,8 @@ class LayerSensitivityAnalyzer:
             dataset_config=dataset_config,
             split_name="evaluation",
         )
+        self.calibration_num_samples = calibration_num_samples
+        self.eval_num_samples = eval_num_samples
         self.sensitivity_scores = {}
 
     def _prepare_hf_dataset(
@@ -537,79 +539,6 @@ class LayerSensitivityAnalyzer:
                 continue
         return quantized_model
 
-    def evaluate_model(self, model, num_samples: int = 30):
-        """Evaluate model performance using perplexity on evaluation samples."""
-        try:
-            from torch.nn import CrossEntropyLoss
-
-            # Prepare evaluation texts
-            eval_texts = []
-            for i in range(min(num_samples, len(self.eval_data["input_ids"]))):
-                text = self.tokenizer.decode(
-                    self.eval_data["input_ids"][i], skip_special_tokens=True
-                )
-                if len(text.strip()) > 0:
-                    eval_texts.append(text)
-
-            if not eval_texts:
-                raise ValueError("No valid evaluation texts were found.")
-
-            # Tokenize texts
-            encodings = self.tokenizer(
-                eval_texts,
-                add_special_tokens=True,
-                padding=True,
-                truncation=True,
-                max_length=model.config.max_position_embeddings,
-                return_tensors="pt",
-                return_attention_mask=True,
-            ).to(self.device)
-
-            encoded_texts = encodings["input_ids"]
-            attn_masks = encodings["attention_mask"]
-
-            # Initialize loss function
-            loss_fct = CrossEntropyLoss(reduction="none")
-            total_loss = 0
-            total_tokens = 0
-
-            # Process in batches
-            batch_size = 1  # Process one text at a time for stability
-            for start_index in range(0, len(encoded_texts), batch_size):
-                end_index = min(start_index + batch_size, len(encoded_texts))
-                encoded_batch = encoded_texts[start_index:end_index]
-                attn_mask = attn_masks[start_index:end_index]
-
-                with torch.no_grad():
-                    outputs = model(encoded_batch, attention_mask=attn_mask)
-                    logits = outputs.logits
-
-                # Shift logits and labels for next-token prediction
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = encoded_batch[..., 1:].contiguous()
-                shift_attention_mask = attn_mask[..., 1:].contiguous()
-
-                # Calculate loss
-                loss = (
-                    loss_fct(shift_logits.transpose(1, 2), shift_labels)
-                    * shift_attention_mask
-                )
-                total_loss += loss.sum().item()
-                total_tokens += shift_attention_mask.sum().item()
-
-            # Calculate final perplexity
-            if total_tokens > 0:
-                avg_loss = total_loss / total_tokens
-                perplexity = torch.exp(torch.tensor(avg_loss)).item()
-            else:
-                perplexity = float("inf")
-
-            return perplexity
-
-        except Exception as e:
-            print(f"Error during evaluation: {e}")
-            return float("inf")
-
     def run_full_analysis(self, target_avg_bits: float = 6.0, sensitivity_method: str = "divergence"):
         """Run full analysis including sensitivity analysis, mixed precision configuration, and evaluation."""
         sensitivity_scores = self.analyze_layer_sensitivity(
@@ -618,12 +547,12 @@ class LayerSensitivityAnalyzer:
         mp_config = self.get_mixed_precision_config(
             target_bits=target_avg_bits
         )  # get mixed precision config
-        original_ppl = self.evaluate_model(self.model)  # evaluate original model
+        original_ppl = evaluate_model(self.model, self.tokenizer, self.eval_data, self.eval_num_samples, self.device)  # evaluate original model
         original_size = get_model_size_mb(self.model)  # get original model size
         quantized_model = self.apply_mixed_precision(
             mp_config
         )  # apply mixed precision quantization
-        quantized_ppl = self.evaluate_model(quantized_model)  # evaluate quantized model
+        quantized_ppl = evaluate_model(quantized_model, self.tokenizer, self.eval_data, self.eval_num_samples, self.device)  # evaluate quantized model
         quantized_size = get_model_size_mb(
             quantized_model, mp_config
         )  # get quantized model size
