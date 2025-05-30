@@ -6,8 +6,7 @@ import copy
 import math
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
-import os
-import json
+from sensitivity_metrics import SensitivityMetrics
 from reporter import run_full_analysis_report
 from model_utils import evaluate_model, get_model_size_mb
 
@@ -104,6 +103,14 @@ class LayerSensitivityAnalyzer:
             ):
                 layers[name] = module
         return layers
+    
+    def _replace_layer_in_model(self, model, layer_name, new_layer):
+        """Replace a layer in the model with a new layer instance."""
+        parts = layer_name.split(".")
+        current = model
+        for part in parts[:-1]:
+            current = getattr(current, part)
+        setattr(current, parts[-1], new_layer)
 
     def _quantize(
         self,
@@ -258,7 +265,7 @@ class LayerSensitivityAnalyzer:
     def analyze_layer_sensitivity(self, bits: int = 8, sensitivity_method: str = "divergence"):
         """Analyze the sensitivity of each layer to quantization using the specified method."""
         print(f"Analyzing layer sensitivity with {bits}-bit quantization...")
-        baseline_outputs = self._compute_baseline_detailed()
+        baseline_outputs = self._compute_baseline()
         activation_stats = self._compute_activation_statistics()
         layers = self._get_layer_modules()
         sensitivity_scores = {}
@@ -269,44 +276,11 @@ class LayerSensitivityAnalyzer:
             self._replace_layer_in_model(
                 model_copy, layer_name, self._quantize_layer(layer_module, bits)
             )
-            quantized_outputs = self._compute_quantized_detailed(model_copy)
+            quantized_outputs = self._compute_quantized(model_copy)
             if sensitivity_method == "divergence":
-                scores = []
-                for baseline_batch, quantized_batch in zip(baseline_outputs, quantized_outputs):  
-                    baseline_logits = baseline_batch["logits"]
-                    quantized_logits = quantized_batch["logits"]
-                    baseline_probs = torch.softmax(baseline_logits / 1.0, dim=-1)
-                    quantized_probs = torch.softmax(quantized_logits / 1.0, dim=-1)
-
-                    # Ensure probabilities are properly normalized and add small epsilon
-                    eps = 1e-10
-                    baseline_probs = baseline_probs + eps
-                    quantized_probs = quantized_probs + eps
-                    baseline_probs = baseline_probs / baseline_probs.sum(
-                        dim=-1, keepdim=True
-                    )
-                    quantized_probs = quantized_probs / quantized_probs.sum(
-                        dim=-1, keepdim=True
-                    )
-
-                    # Calculate Jensen-Shannon Divergence
-                    m = 0.5 * (baseline_probs + quantized_probs)
-
-                    kl_p_m = torch.sum(
-                        baseline_probs * torch.log(baseline_probs / m), dim=-1
-                    )
-                    kl_q_m = torch.sum(
-                        quantized_probs * torch.log(quantized_probs / m), dim=-1
-                    )
-
-                    # JSD is the average of the two KL divergences, then averaged across all positions
-                    jsd = 0.5 * (kl_p_m + kl_q_m).mean().item()
-                    normalized_jsd = jsd / math.log(2)
-                    scores.append(normalized_jsd)
-                sensitivity_scores[layer_name] = np.mean(scores) 
-
+                sensitivity_scores[layer_name] = SensitivityMetrics.compute_divergence_based_sensitivities(baseline_outputs, quantized_outputs)
             elif sensitivity_method == "hessian":
-                sensitivity_scores[layer_name] = self._compute_hessian_trace(layer_name, layer_module) 
+                sensitivity_scores[layer_name] = SensitivityMetrics.compute_hessian_based_sensitivities(model_copy, layer_name, layer_module, self.calibration_data) 
 
             # Normalize activation magnitude to [0,1] range
             if layer_name in activation_stats:
@@ -325,90 +299,9 @@ class LayerSensitivityAnalyzer:
                 torch.cuda.empty_cache()
         self.sensitivity_scores = sensitivity_scores
         return sensitivity_scores
-    
-    def _compute_hessian_trace(self, layer_name, layer_module):
-        """Compute the trace of the Hessian diagonal for a specific layer using Fisher Information approximation."""
 
-        # Set model to train mode for gradient computation
-        was_training = self.model.training
-        self.model.train()
-
-        trace_sum = 0.0
-        num_samples = 0
-
-        # Use a smaller subset for Hessian computation to manage memory
-        max_samples_for_hessian = min(20, len(self.calibration_data["input_ids"]))
-
-        try:
-            for i in range(0, max_samples_for_hessian, 1):  # Process one sample at a time
-                batch_inputs = {
-                    "input_ids": self.calibration_data["input_ids"][i:i+1],
-                    "attention_mask": self.calibration_data["attention_mask"][i:i+1],
-                }
-                
-                # Clear gradients
-                self.model.zero_grad()
-                
-                # Forward pass
-                outputs = self.model(**batch_inputs)
-                logits = outputs.logits
-                
-                # Use log probabilities for numerical stability
-                log_probs = torch.log_softmax(logits, dim=-1)
-                
-                # Sample multiple tokens from the distribution for better approximation
-                seq_len = log_probs.size(1)
-                samples_per_seq = min(5, seq_len)  # Sample a few positions per sequence
-                
-                for pos_idx in range(0, seq_len, max(1, seq_len // samples_per_seq)):
-                    if pos_idx >= seq_len:
-                        break
-                        
-                    # Clear gradients for this position
-                    self.model.zero_grad()
-                    
-                    # Sample from categorical distribution at this position
-                    probs = torch.softmax(logits[0, pos_idx], dim=0)
-                    sampled_token = torch.multinomial(probs, 1)
-                    
-                    # Compute log probability of sampled token  
-                    log_prob = log_probs[0, pos_idx, sampled_token]
-                    
-                    # Backward pass to compute gradients
-                    log_prob.backward(retain_graph=True)
-                    
-                    # Get gradient for this layer
-                    if layer_module.weight.grad is not None:
-                        grad = layer_module.weight.grad.clone()
-                        # Fisher Information approximation: trace of outer product g ⊗ g
-                        trace_contribution = torch.sum(grad * grad).item()
-                        trace_sum += trace_contribution
-                        num_samples += 1
-            
-            # Normalize by number of samples
-            hessian_trace = trace_sum / num_samples if num_samples > 0 else 0.0
-            
-            # Normalize by parameter count for fair comparison across layers
-            param_count = layer_module.weight.numel()
-            normalized_trace = hessian_trace / param_count if param_count > 0 else 0.0
-            
-            # Apply log scaling to compress the range
-            sensitivity_score = math.log(1 + normalized_trace)
-            
-        except Exception as e:
-            print(f"Warning: Hessian computation failed for {layer_name}: {str(e)}")
-            sensitivity_score = 1.0  # Default sensitivity
-
-        finally:
-            # Restore original training mode
-            self.model.train(was_training)
-            # Clear any remaining gradients
-            self.model.zero_grad()
-
-        return sensitivity_score
-
-    def _compute_baseline_detailed(self):
-        """Compute and store detailed outputs from the original model."""
+    def _compute_baseline(self):
+        """Compute and store outputs from the original model."""
         if hasattr(self, "_cached_baseline_outputs"):
             return self._cached_baseline_outputs
         
@@ -437,8 +330,8 @@ class LayerSensitivityAnalyzer:
         self._cached_baseline_outputs = baseline_outputs
         return baseline_outputs
 
-    def _compute_quantized_detailed(self, quantized_model):
-        """Compute and store detailed outputs from the quantized model."""
+    def _compute_quantized(self, quantized_model):
+        """Compute and store outputs from the quantized model."""
         quantized_outputs = []
         with torch.no_grad():
             for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
@@ -461,14 +354,6 @@ class LayerSensitivityAnalyzer:
                     }
                 )
         return quantized_outputs
-
-    def _replace_layer_in_model(self, model, layer_name, new_layer):
-        """Replace a layer in the model with a new layer instance."""
-        parts = layer_name.split(".")
-        current = model
-        for part in parts[:-1]:
-            current = getattr(current, part)
-        setattr(current, parts[-1], new_layer)
 
     def get_mixed_precision_config(
         self, target_bits: float = 6.0, bit_options: list = None
