@@ -9,6 +9,7 @@ from datasets import load_dataset
 from sensitivity_metrics import SensitivityMetrics
 from reporter import run_full_analysis_report
 from model_utils import evaluate_model, get_model_size_mb
+from quantizer import replace_single_linear_with_target, W8A16LinearLayer, W16A16LinearLayer
 
 
 class LayerSensitivityAnalyzer:
@@ -36,6 +37,9 @@ class LayerSensitivityAnalyzer:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.float32, device_map=None
         ).to(self.device)
+
+        print(self.model)
+
         self.model.eval()
         self.batch_size = batch_size
         self.calibration_data = calibration_data or self._prepare_hf_dataset(
@@ -95,12 +99,7 @@ class LayerSensitivityAnalyzer:
             # layers[name] = module
 
             # Only include layers that have weights
-            if (
-                hasattr(module, "weight")
-                and isinstance(module.weight, torch.Tensor)
-                and "lm_head" not in name
-                and "ln_f" not in name
-            ):
+            if isinstance(module, nn.Linear) : # and "lm_head" not in name
                 layers[name] = module
         return layers
     
@@ -273,9 +272,12 @@ class LayerSensitivityAnalyzer:
 
         for layer_name, layer_module in tqdm(layers.items(), desc="Analyzing layers"):
             model_copy = copy.deepcopy(self.model)
-            self._replace_layer_in_model(
-                model_copy, layer_name, self._quantize_layer(layer_module, bits)
+            replace_single_linear_with_target(
+                model_copy,
+                W8A16LinearLayer,  # Assuming we want to quantize Linear layers
+                layer_name
             )
+
             quantized_outputs = self._compute_quantized(model_copy)
             if sensitivity_method == "divergence":
                 sensitivity_scores[layer_name] = SensitivityMetrics.compute_divergence_based_sensitivities(baseline_outputs, quantized_outputs)
@@ -360,7 +362,7 @@ class LayerSensitivityAnalyzer:
     ):
         """Generate mixed precision configuration based on layer sensitivity scores."""
         if bit_options is None:
-            bit_options = [16, 8, 4]
+            bit_options = [32, 16, 8]
 
         # Sort layers by sensitivity (most sensitive first)
         sorted_layers = sorted(
@@ -415,10 +417,21 @@ class LayerSensitivityAnalyzer:
                     if not part:  # Skip empty parts
                         continue
                     current = getattr(current, part)
-                quantized_layer = self._quantize_layer(current, bits)
-                self._replace_layer_in_model(
-                    quantized_model, layer_name, quantized_layer
-                )
+
+                if bits==16:
+                    replace_single_linear_with_target(
+                        quantized_model,
+                        W16A16LinearLayer,  
+                        layer_name
+                    )
+
+                elif bits==8:
+                    replace_single_linear_with_target(
+                        quantized_model,
+                        W8A16LinearLayer,  
+                        layer_name
+                    )
+
             except Exception as e:
                 print(f"Warning: Could not quantize layer {layer_name}: {str(e)}")
                 continue
@@ -437,6 +450,7 @@ class LayerSensitivityAnalyzer:
         quantized_model = self.apply_mixed_precision(
             mp_config
         )  # apply mixed precision quantization
+        print(quantized_model)
         quantized_ppl = evaluate_model(quantized_model, self.tokenizer, self.eval_data, self.eval_num_samples, self.device)  # evaluate quantized model
         quantized_size = get_model_size_mb(
             quantized_model, mp_config
