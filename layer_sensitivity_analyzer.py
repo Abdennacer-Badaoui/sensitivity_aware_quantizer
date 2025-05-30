@@ -37,9 +37,6 @@ class LayerSensitivityAnalyzer:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.float32, device_map=None
         ).to(self.device)
-
-        print(self.model)
-
         self.model.eval()
         self.batch_size = batch_size
         self.calibration_data = calibration_data or self._prepare_hf_dataset(
@@ -450,7 +447,6 @@ class LayerSensitivityAnalyzer:
         quantized_model = self.apply_mixed_precision(
             mp_config
         )  # apply mixed precision quantization
-        print(quantized_model)
         quantized_ppl = evaluate_model(quantized_model, self.tokenizer, self.eval_data, self.eval_num_samples, self.device)  # evaluate quantized model
         quantized_size = get_model_size_mb(
             quantized_model, mp_config
