@@ -360,7 +360,7 @@ class LayerSensitivityAnalyzer:
     ):
         """Generate mixed precision configuration based on layer sensitivity scores."""
         if bit_options is None:
-            bit_options = [16, 8, 4]
+            bit_options = [32, 16, 8]
 
         # Sort layers by sensitivity (most sensitive first)
         sorted_layers = sorted(

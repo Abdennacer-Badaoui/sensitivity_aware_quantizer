@@ -5,12 +5,9 @@ from layer_sensitivity_analyzer import LayerSensitivityAnalyzer
 from utils import run_analysis_for_models, plot_comparisons
 
 MODELS = [
-    # "microsoft/DialoGPT-small",
-    # "gpt2",
-    # "distilbert/distilgpt2",
-    "EleutherAI/gpt-neo-125M",
-    # "facebook/opt-125M",
-    # "facebook/opt-355M",
+    "facebook/opt-125m",            
+    "EleutherAI/gpt-neo-125M",                   
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0", 
 ]
 
 RESULTS_DIR = "results"
@@ -24,7 +21,7 @@ def parse_args():
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["EleutherAI/gpt-neo-125M"],
+        default=MODELS,
         help="List of model names to analyze",
     )
 
