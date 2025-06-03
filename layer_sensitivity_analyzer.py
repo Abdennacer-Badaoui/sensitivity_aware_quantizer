@@ -96,7 +96,7 @@ class LayerSensitivityAnalyzer:
             # layers[name] = module
 
             # Only include layers that have weights
-            if isinstance(module, nn.Linear) : # and "lm_head" not in name
+            if isinstance(module, nn.Linear) and "lm_head" not in name:
                 layers[name] = module
         return layers
     
