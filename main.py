@@ -6,13 +6,9 @@ from utils import run_analysis_for_models, plot_comparisons
 
 MODELS = [
     "facebook/opt-125m",            
-    "EleutherAI/gpt-neo-125M",                   
-    "TinyLlama/TinyLlama-1.1B-Chat-v1.0",  
+    #"EleutherAI/gpt-neo-125M",                   
+    #"TinyLlama/TinyLlama-1.1B-Chat-v1.0",  
 ]
-
-RESULTS_DIR = "results"
-PLOTS_DIR = "plots"
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Model Quantization Analysis Tool")
@@ -51,14 +47,6 @@ def parse_args():
         help="Number of samples for evaluation"
     )
 
-    # Quantization parameters
-    parser.add_argument(
-        "--target_bits",
-        type=float,
-        default=12.0,
-        help="Target average bits for mixed precision quantization",
-    )
-
     # Sensitivity analysis methods
     parser.add_argument(
         "--sensitivity_method",
@@ -66,6 +54,29 @@ def parse_args():
         default="divergence",
         choices=["divergence", "hessian"],
         help="Method for sensitivity analysis",
+    )
+
+    parser.add_argument(
+        "--config_strategy",
+        type=str,
+        default="int4_only",
+        choices=["adaptive_threshold", "percentile", "exponential", "aggressive", "conservative", "int4_only"],
+        help="Configuration strategy for quantization",
+    )
+
+    parser.add_argument(
+        "--use_iterative",
+        type=bool,
+        default=True,
+        choices=[True, False],
+        help="Use iterative quantization method",
+    )
+
+    parser.add_argument(
+        "--max_ppl_increase",
+        type=float,
+        default=0.1,
+        help="Maximum allowed increase in perplexity during quantization",
     )
 
     # Processing parameters
@@ -97,19 +108,21 @@ def main():
 
     # Run analysis
     all_results = run_analysis_for_models(
-        results_dir=RESULTS_DIR,
+        results_dir=args.results_dir,
         models=args.models,
         calibration_data=None,
         eval_data=None,
         calibration_num_samples=args.calibration_samples,
         eval_num_samples=args.eval_samples,
         batch_size=args.batch_size,
-        target_avg_bits=args.target_bits,
         sensitivity_method=args.sensitivity_method,
+        config_strategy=args.config_strategy,
+        use_iterative=args.use_iterative,
+        max_perplexity_increase=args.max_ppl_increase,
     )
 
     if all_results:
-        plot_comparisons(PLOTS_DIR, all_results, args.target_bits, args.sensitivity_method)
+        plot_comparisons(args.plots_dir, all_results, args.sensitivity_method, args.config_strategy, args.use_iterative, args.max_ppl_increase)
         print(
             f"\nAnalysis and visualizations complete. See {args.results_dir} and {args.plots_dir}."
         )

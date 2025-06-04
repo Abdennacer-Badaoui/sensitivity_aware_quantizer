@@ -12,8 +12,10 @@ def run_analysis_for_models(
     calibration_num_samples=100,
     eval_num_samples=100,
     batch_size=32,
-    target_avg_bits=12.0,
     sensitivity_method="divergence",
+    config_strategy = "aggressive",
+    use_iterative = False,
+    max_perplexity_increase = 0.1,
 ):
     """
     Run sensitivity analysis for a list of models and save results.
@@ -33,21 +35,26 @@ def run_analysis_for_models(
 
             # Run analysis
             results = analyzer.run_full_analysis(
-                target_avg_bits=target_avg_bits, sensitivity_method=sensitivity_method
+                sensitivity_method=sensitivity_method,
+                config_strategy=config_strategy,
+                use_iterative=use_iterative,
+                max_perplexity_increase=max_perplexity_increase,
             )
 
             # Create results dictionary
             model_results = {
                 "model_name": model_name,
+                "sensitivity_method": sensitivity_method,
+                "config_strategy": config_strategy,
+                "use_iterative": use_iterative,
+                "max_perplexity_increase": max_perplexity_increase,
                 "original_perplexity": results.get("original_perplexity"),
                 "quantized_perplexity": results.get("quantized_perplexity"),
                 "original_model_size_mb": results.get("original_model_size_mb"),
                 "quantized_model_size_mb": results.get("quantized_model_size_mb"),
                 "sensitivity_scores": results.get("sensitivity_scores"),
                 "mixed_precision_config": results.get("mixed_precision_config"),
-                "bit_distribution": results.get("bit_distribution"),
-                "target_avg_bits": target_avg_bits,
-                "actual_avg_bits": results.get("actual_avg_bits"),
+                "bit_distribution": results.get("bit_distribution"),         
             }
 
             # Clean up quantized model from results
@@ -58,7 +65,7 @@ def run_analysis_for_models(
 
             # Save individual results
             out_path = os.path.join(
-                results_dir, f"{model_name.replace('/', '_')}_sensitivity.json"
+                results_dir, f"{model_name.replace('/', '_')}_{sensitivity_method}_{config_strategy}.json"
             )
             save_json(model_results, out_path)
 
@@ -75,7 +82,7 @@ def run_analysis_for_models(
     return all_results
 
 
-def plot_comparisons(plots_dir, all_results, target_avg_bits, sensitivity_method):
+def plot_comparisons(plots_dir, all_results, sensitivity_method, config_strategy, use_iterative, max_perplexity_increase):
     """
     Plot model size and perplexity comparisons for all analyzed models.
     """
@@ -125,7 +132,10 @@ def plot_comparisons(plots_dir, all_results, target_avg_bits, sensitivity_method
     ax1.set_xticks(x)
     ax1.set_xticklabels(model_names, rotation=45, ha="right")
     ax1.legend(loc="upper left")
-    ax1.set_title(f"Model Size Comparison (target avg bits: {target_avg_bits})")
+    ax1.set_title(f"Model Size (Sensitivity Method: {sensitivity_method}, "
+                 f"Config Strategy: {config_strategy}, "
+                 f"Iterative: {use_iterative}, "
+                 f"Max permitted PPL Increase: {max_perplexity_increase})")
 
     # Add size reduction percentage
     for i, (orig, quant) in enumerate(zip(orig_size, quant_size)):
@@ -156,7 +166,10 @@ def plot_comparisons(plots_dir, all_results, target_avg_bits, sensitivity_method
     ax2.set_xticks(x)
     ax2.set_xticklabels(model_names, rotation=45, ha="right")
     ax2.legend(loc="upper left")
-    ax2.set_title(f"Model Perplexity Comparison (target avg bits: {target_avg_bits})")
+    ax2.set_title(f"Model Perplexity (Sensitivity Method: {sensitivity_method}, "
+                 f"Config Strategy: {config_strategy}, "
+                 f"Iterative: {use_iterative}, "
+                 f"Max permitted PPL Increase: {max_perplexity_increase})")
 
     # Add perplexity degradation percentage
     for i, (orig, quant) in enumerate(zip(orig_ppl, quant_ppl)):
@@ -174,7 +187,7 @@ def plot_comparisons(plots_dir, all_results, target_avg_bits, sensitivity_method
     ax2.set_ylim(0, max(max(orig_ppl), max(quant_ppl)) * 1.2)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, f"model_comparison_{target_avg_bits}_{sensitivity_method}.png"))
+    plt.savefig(os.path.join(plots_dir, f"model_comparison_{sensitivity_method}_{config_strategy}.png"))
     plt.close()
 
 

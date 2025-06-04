@@ -24,10 +24,7 @@ def print_summary(all_results: Dict):
         print(f"  Original Perplexity:      {res.get('original_perplexity', 'N/A')}")
         print(f"  Quantized Perplexity:     {res.get('quantized_perplexity', 'N/A')}")
         print(f"  Original Model Size (MB): {res.get('original_model_size_mb', 'N/A')}")
-        print(
-            f"  Quantized Model Size (MB):{res.get('quantized_model_size_mb', 'N/A')}"
-        )
-        print(f"  Actual Avg Bits:          {res.get('actual_avg_bits', 'N/A')}")
+        print(f"  Quantized Model Size (MB):{res.get('quantized_model_size_mb', 'N/A')}")
         print(f"  Bit Distribution:         {res.get('bit_distribution', 'N/A')}")
         print("-")
 
@@ -39,7 +36,6 @@ def run_full_analysis_report(
     quantized_ppl,
     original_size,
     quantized_size,
-    target_avg_bits,
     sensitivity_method,
 ):
     """Run complete analysis including sensitivity analysis, mixed precision configuration, and evaluation."""
@@ -51,8 +47,6 @@ def run_full_analysis_report(
     sorted_scores = sorted(sensitivity_scores.items(), key=lambda x: x[1], reverse=True)
     for layer_name, score in sorted_scores:
         print(f"{layer_name:<45} {score:.8f}")
-    print(f"\nMixed Precision Configuration (target: {target_avg_bits:.1f} bits avg):")
-    print("-" * 70)
     bit_counts = {}
     for layer_name, bits in mp_config.items():
         bit_counts[bits] = bit_counts.get(bits, 0) + 1
@@ -61,8 +55,6 @@ def run_full_analysis_report(
     print(f"\nBit Distribution:")
     for bits in sorted(bit_counts.keys(), reverse=True):
         print(f"  {bits:2d} bits: {bit_counts[bits]:2d} layers")
-    actual_avg_bits = sum(mp_config.values()) / len(mp_config)
-    print(f"  Actual average: {actual_avg_bits:.2f} bits")
     print(f"\nModel Evaluation:")
     print("-" * 70)
     try:
@@ -101,8 +93,6 @@ def run_full_analysis_report(
         else None,
         "original_model_size_mb": original_size,
         "quantized_model_size_mb": quantized_size,
-        "target_avg_bits": target_avg_bits,
-        "actual_avg_bits": actual_avg_bits,
         "bit_distribution": bit_counts,
     }
     return results
