@@ -9,7 +9,7 @@ from datasets import load_dataset
 from sensitivity_metrics import SensitivityMetrics
 from reporter import run_full_analysis_report
 from model_utils import evaluate_model, get_model_size_mb
-from quantizer import replace_single_linear_with_target, W8A16LinearLayer, W16A16LinearLayer
+from quantizer import replace_single_linear_with_target, W4A16LinearLayer, W8A16LinearLayer, W16A16LinearLayer
 
 
 class LayerSensitivityAnalyzer:
@@ -96,125 +96,9 @@ class LayerSensitivityAnalyzer:
             # layers[name] = module
 
             # Only include layers that have weights
-            if isinstance(module, nn.Linear) and "lm_head" not in name:
+            if isinstance(module, nn.Linear) : # and "lm_head" not in name: 
                 layers[name] = module
         return layers
-    
-    def _replace_layer_in_model(self, model, layer_name, new_layer):
-        """Replace a layer in the model with a new layer instance."""
-        parts = layer_name.split(".")
-        current = model
-        for part in parts[:-1]:
-            current = getattr(current, part)
-        setattr(current, parts[-1], new_layer)
-
-    def _quantize(
-        self,
-        tensor: torch.Tensor,
-        bits: int = 8,
-        per_channel: bool = True,
-        symmetric: bool = True,
-    ):
-        """Quantize a tensor to specified bit precision using symmetric or asymmetric quantization."""
-        if bits == 32:
-            return tensor
-        if bits == 16:
-            # Simulate float16 quantization but keep float32 storage
-            return tensor.to(torch.float16).to(torch.float32)
-        if symmetric:
-            return self._symmetric_quantize(tensor, bits, per_channel)
-        else:
-            return self._asymmetric_quantize(tensor, bits, per_channel)
-
-    def _symmetric_quantize(
-        self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True, unsigned: bool = False
-    ):
-        """Perform symmetric quantization on a tensor to specified bit precision."""
-
-        if unsigned:
-            qmin = 0
-            qmax = 2 ** bits - 1
-        else:
-            qmin = -2 ** (bits - 1)
-            qmax = 2 ** (bits - 1) - 1
-        if per_channel and tensor.dim() >= 2:
-            dims = tuple(range(1, tensor.dim()))
-            max_vals = tensor.abs().amax(dim=dims, keepdim=True)
-            scale_denominator = (qmax - qmin) / 2
-            scale = max_vals / scale_denominator
-            zero_point = 0  # Symmetric quantization uses zero_point = 0
-            q_tensor = torch.round(tensor / scale + zero_point)
-            q_tensor = torch.clamp(q_tensor, qmin, qmax)
-            return (q_tensor - zero_point) * scale
-        else:
-            max_val = tensor.abs().max().item()
-            scale = max_val / ((qmax - qmin) / 2) if (qmax - qmin) != 0 else 1.0
-            zero_point = 0 if not unsigned else qmin
-            q_tensor = torch.round(tensor / scale + zero_point)
-            q_tensor = torch.clamp(q_tensor, qmin, qmax)
-            return (q_tensor - zero_point) * scale
-
-    def _asymmetric_quantize(self, tensor: torch.Tensor, bits: int = 8, per_channel: bool = True, unsigned: bool = False):
-        """Perform asymmetric quantization using only bits (no dtype/iinfo)."""
-
-        if unsigned:
-            qmin = 0
-            qmax = 2 ** bits - 1
-        else:
-            qmin = -2 ** (bits - 1)
-            qmax = 2 ** (bits - 1) - 1
-        if per_channel and tensor.dim() >= 2:
-            dims = tuple(range(1, tensor.dim()))
-            rmin = tensor.amin(dim=dims, keepdim=True)
-            rmax = tensor.amax(dim=dims, keepdim=True)
-            scale = (rmax - rmin) / (qmax - qmin)
-            valid_scale = scale != 0
-            zero_point = torch.where(
-                valid_scale,
-                qmin - (rmin / scale),
-                torch.tensor(0.0, device=tensor.device)
-            )
-            zero_point = zero_point.round().to(torch.int32)
-            q_tensor = torch.where(
-                valid_scale,
-                torch.round(tensor / scale + zero_point),
-                zero_point  # When scale=0, all values are rmin, quantized to zero_point
-            )
-            q_tensor = torch.clamp(q_tensor, qmin, qmax)
-            return (q_tensor - zero_point) * scale
-        else:
-            rmin, rmax = tensor.min().item(), tensor.max().item()
-            scale = (rmax - rmin) / (qmax - qmin) if (qmax - qmin) != 0 else 1.0
-            zero_point = qmin - rmin / scale if scale != 0 else 0
-            zero_point = int(round(zero_point))
-            q_tensor = torch.round(tensor / scale + zero_point)
-            q_tensor = torch.clamp(q_tensor, qmin, qmax)
-            return (q_tensor - zero_point) * scale
-
-    def _quantize_layer(
-        self, layer: nn.Module, bits: int = 8, preserve_magnitude: bool = False
-    ):
-        """Quantize a neural network layer's weights and biases to specified bit precision."""
-        if not hasattr(layer, "weight"):
-            return layer
-        quantized_layer = copy.deepcopy(layer)
-        original_weight = layer.weight.data
-        quantized_weight = self._quantize(
-            original_weight, bits, per_channel=True, symmetric=False
-        )
-        if preserve_magnitude:
-            original_norm = torch.norm(original_weight)
-            quantized_norm = torch.norm(quantized_weight)
-            if quantized_norm > 1e-8:
-                scale_factor = original_norm / quantized_norm
-                quantized_weight = quantized_weight * scale_factor
-        quantized_layer.weight.data = quantized_weight
-        if hasattr(layer, "bias") and layer.bias is not None:
-            bias_bits = min(bits + 4, 16)
-            quantized_layer.bias.data = self._quantize(
-                layer.bias.data, bias_bits, per_channel=False, symmetric=False
-            )
-        return quantized_layer
 
     def _compute_activation_statistics(self):
         """Compute mean, std, and magnitude statistics for layer activations."""
@@ -359,7 +243,7 @@ class LayerSensitivityAnalyzer:
     ):
         """Generate mixed precision configuration based on layer sensitivity scores."""
         if bit_options is None:
-            bit_options = [32, 16, 8]
+            bit_options = [32, 16, 8, 4]
 
         # Sort layers by sensitivity (most sensitive first)
         sorted_layers = sorted(
@@ -426,6 +310,12 @@ class LayerSensitivityAnalyzer:
                     replace_single_linear_with_target(
                         quantized_model,
                         W8A16LinearLayer,  
+                        layer_name
+                    )
+                else: # bits==4
+                    replace_single_linear_with_target(
+                        quantized_model,
+                        W4A16LinearLayer,  
                         layer_name
                     )
 

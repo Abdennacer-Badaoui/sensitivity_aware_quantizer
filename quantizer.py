@@ -2,6 +2,65 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class W4A16LinearLayer(nn.Module):
+    def __init__(self, in_features, out_features, bias=True, dtype=torch.float32):
+        super().__init__()
+        
+        # Store quantized weights as uint8, but only use 4 bits
+        self.register_buffer(
+            "int4_weights",
+            torch.randint(0, 15, (out_features, in_features), dtype=torch.uint8)
+        )
+        
+        # Asymmetric quantization parameters
+        self.register_buffer("scales", torch.randn((out_features,), dtype=dtype))
+        self.register_buffer("zero_points", torch.randint(0, 15, (out_features,), dtype=torch.uint8))
+        
+        if bias:
+            self.register_buffer("bias", torch.randn((1, out_features), dtype=dtype))
+        else:
+            self.bias = None
+    
+    def quantize(self, weights):
+        """Asymmetric quantization of weights to 4-bit"""
+        w_fp32 = weights.clone().to(torch.float32)
+        
+        # Find min and max values per output channel
+        w_min = w_fp32.min(dim=-1).values
+        w_max = w_fp32.max(dim=-1).values
+        
+        # Calculate scale and zero point for asymmetric quantization
+        # Range for 4-bit: [0, 15]
+        scales = (w_max - w_min) / 15.0
+        zero_points = torch.round(-w_min / scales).clamp(0, 15)
+        
+        # Quantize weights
+        int4_weights = torch.round(w_fp32 / scales.unsqueeze(1) + zero_points.unsqueeze(1))
+        int4_weights = int4_weights.clamp(0, 15).to(torch.uint8)
+        
+        # Update buffers
+        self.int4_weights = int4_weights
+        self.scales = scales.to(weights.dtype)
+        self.zero_points = zero_points
+    
+    def dequantize_weights(self, input_dtype):
+        """Dequantize 4-bit weights back to floating point"""
+        # Convert to input dtype and apply asymmetric dequantization
+        dequantized = (self.int4_weights.to(input_dtype) - self.zero_points.unsqueeze(1).to(input_dtype)) * self.scales.unsqueeze(1)
+        return dequantized
+    
+    def forward(self, input):
+        # Dequantize weights on-the-fly
+        dequantized_weights = self.dequantize_weights(input.dtype)
+        
+        # Standard linear operation
+        output = F.linear(input, dequantized_weights)
+        
+        if self.bias is not None:
+            output = output + self.bias
+            
+        return output
+
 
 class W8A16LinearLayer(nn.Module):
     def __init__(self, in_features, out_features, 
