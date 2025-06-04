@@ -16,21 +16,21 @@ The tool provides various command-line options to customize the quantization pro
 
 ### Basic Usage
 
-Run with default settings (uses EleutherAI/gpt-neo-125M model, 12.0 target bits, and divergence-based methode):
+Run with default settings (uses facebook/opt-125m model with divergence-based method):
 
 ```bash
-python quantizer.py
+python main.py
 ```
 
 ### Multiple Models Analysis
 
-Analyze multiple models with custom target bits and method:
+Analyze multiple models with custom sensitivity method and configuration strategy:
 
 ```bash
-python quantizer.py \
-    --models EleutherAI/gpt-neo-125M gpt2 \
-    --target_bits 8.0 \
-    --method divergence
+python main.py \
+    --models facebook/opt-125m EleutherAI/gpt-neo-125M \
+    --sensitivity_method divergence \
+    --config_strategy int4_only
 ```
 
 ### Custom Dataset Configuration
@@ -38,50 +38,42 @@ python quantizer.py \
 Use a different dataset and adjust sample sizes:
 
 ```bash
-python quantizer.py \
+python main.py \
     --dataset wikitext \
-    --dataset_config wikitext-103-raw-v1 \
+    --dataset_config wikitext-2-raw-v1 \
     --calibration_samples 200 \
     --eval_samples 200
 ```
 
-### Custom Output Directories
+### Advanced Configuration Example
 
-Specify custom directories for results and plots:
-
-```bash
-python quantizer.py \
-    --results_dir custom_results \
-    --plots_dir custom_plots
-```
-
-### Full Configuration Example
-
-Complete example with all major parameters customized:
+Complete example with iterative quantization and perplexity control:
 
 ```bash
-python quantizer.py \
-    --models EleutherAI/gpt-neo-125M \
-    --target_bits 8.0 \
-    --method divergence \
+python main.py \
+    --models facebook/opt-125m \
+    --sensitivity_method divergence \
+    --config_strategy int4_only \
+    --use_iterative True \
+    --max_ppl_increase 0.1 \
     --batch_size 32 \
-    --device cuda \
-    --calibration_samples 150 \
-    --eval_samples 150
+    --device cuda
 ```
 
 ## Command Line Arguments
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--models` | List of model names to analyze | `["EleutherAI/gpt-neo-125M"]` |
+| `--models` | List of model names to analyze | `["facebook/opt-125m"]` |
 | `--dataset` | Dataset name for calibration and evaluation | `"wikitext"` |
 | `--dataset_config` | Dataset configuration | `"wikitext-2-raw-v1"` |
 | `--calibration_samples` | Number of samples for calibration | `100` |
 | `--eval_samples` | Number of samples for evaluation | `100` |
-| `--target_bits` | Target average bits for mixed precision | `12.0` |
-| `--method` | Sensitivity analysis method (`divergence`,`hessian`) | `"divergence"` |
-| `--batch_size` | Batch size for processing | `16` |
+| `--sensitivity_method` | Method for sensitivity analysis (`divergence`, `hessian`) | `"divergence"` |
+| `--config_strategy` | Configuration strategy for quantization (`adaptive_threshold`, `percentile`, `exponential`, `aggressive`, `conservative`, `int4_only`) | `"int4_only"` |
+| `--use_iterative` | Use iterative quantization method | `True` |
+| `--max_ppl_increase` | Maximum allowed increase in perplexity during quantization | `0.1` |
+| `--batch_size` | Batch size for processing | `32` |
 | `--device` | Device to use (`auto`, `cuda`, or `cpu`) | `"auto"` |
 | `--results_dir` | Directory to save results | `"results"` |
 | `--plots_dir` | Directory to save plots | `"plots"` |
