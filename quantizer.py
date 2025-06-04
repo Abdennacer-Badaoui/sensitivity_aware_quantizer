@@ -6,10 +6,15 @@ class W4A16LinearLayer(nn.Module):
     def __init__(self, in_features, out_features, bias=True, dtype=torch.float32):
         super().__init__()
         
-        # Store quantized weights as uint8, but only use 4 bits
+        # Pack two 4-bit weights into each uint8 byte
+        # If in_features is odd, we'll pad with one extra weight
+        self.in_features = in_features
+        self.out_features = out_features
+        packed_in_features = (in_features + 1) // 2
+        
         self.register_buffer(
-            "int4_weights",
-            torch.randint(0, 15, (out_features, in_features), dtype=torch.uint8)
+            "packed_weights",
+            torch.randint(0, 255, (out_features, packed_in_features), dtype=torch.uint8)
         )
         
         # Asymmetric quantization parameters
@@ -22,7 +27,7 @@ class W4A16LinearLayer(nn.Module):
             self.bias = None
     
     def quantize(self, weights):
-        """Asymmetric quantization of weights to 4-bit"""
+        """Asymmetric quantization of weights to 4-bit with packing"""
         w_fp32 = weights.clone().to(torch.float32)
         
         # Find min and max values per output channel
@@ -38,15 +43,57 @@ class W4A16LinearLayer(nn.Module):
         int4_weights = torch.round(w_fp32 / scales.unsqueeze(1) + zero_points.unsqueeze(1))
         int4_weights = int4_weights.clamp(0, 15).to(torch.uint8)
         
+        # Pack weights: combine pairs of 4-bit weights into single uint8
+        packed_weights = self._pack_weights(int4_weights)
+        
         # Update buffers
-        self.int4_weights = int4_weights
+        self.packed_weights = packed_weights
         self.scales = scales.to(weights.dtype)
         self.zero_points = zero_points
     
+    def _pack_weights(self, int4_weights):
+        """Pack two 4-bit weights into each uint8 byte"""
+        out_features, in_features = int4_weights.shape
+        
+        # Pad with zeros if in_features is odd
+        if in_features % 2 == 1:
+            padding = torch.zeros(out_features, 1, dtype=torch.uint8, device=int4_weights.device)
+            int4_weights = torch.cat([int4_weights, padding], dim=1)
+            in_features += 1
+        
+        # Reshape to group pairs of weights
+        int4_weights = int4_weights.view(out_features, in_features // 2, 2)
+        
+        # Pack: first weight in lower 4 bits, second weight in upper 4 bits
+        packed = (int4_weights[:, :, 1] << 4) | int4_weights[:, :, 0]
+        
+        return packed
+    
+    def _unpack_weights(self, packed_weights):
+        """Unpack uint8 bytes back to pairs of 4-bit weights"""
+        out_features, packed_in_features = packed_weights.shape
+        
+        # Extract lower and upper 4 bits
+        lower_4bits = packed_weights & 0x0F  # Extract lower 4 bits
+        upper_4bits = (packed_weights >> 4) & 0x0F  # Extract upper 4 bits
+        
+        # Interleave to restore original order
+        unpacked = torch.stack([lower_4bits, upper_4bits], dim=2)
+        unpacked = unpacked.view(out_features, packed_in_features * 2)
+        
+        # Trim to original size if we padded
+        if unpacked.shape[1] > self.in_features:
+            unpacked = unpacked[:, :self.in_features]
+        
+        return unpacked
+    
     def dequantize_weights(self, input_dtype):
-        """Dequantize 4-bit weights back to floating point"""
+        """Dequantize packed 4-bit weights back to floating point"""
+        # Unpack the weights first
+        unpacked_weights = self._unpack_weights(self.packed_weights)
+        
         # Convert to input dtype and apply asymmetric dequantization
-        dequantized = (self.int4_weights.to(input_dtype) - self.zero_points.unsqueeze(1).to(input_dtype)) * self.scales.unsqueeze(1)
+        dequantized = (unpacked_weights.to(input_dtype) - self.zero_points.unsqueeze(1).to(input_dtype)) * self.scales.unsqueeze(1)
         return dequantized
     
     def forward(self, input):
@@ -60,7 +107,6 @@ class W4A16LinearLayer(nn.Module):
             output = output + self.bias
             
         return output
-
 
 class W8A16LinearLayer(nn.Module):
     def __init__(self, in_features, out_features, 

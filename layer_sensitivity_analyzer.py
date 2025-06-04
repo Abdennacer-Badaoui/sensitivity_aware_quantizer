@@ -299,7 +299,10 @@ class LayerSensitivityAnalyzer:
                         continue
                     current = getattr(current, part)
 
-                if bits==16:
+                if bits==32:
+                    continue
+
+                elif bits==16:
                     replace_single_linear_with_target(
                         quantized_model,
                         W16A16LinearLayer,  
@@ -329,18 +332,12 @@ class LayerSensitivityAnalyzer:
         sensitivity_scores = self.analyze_layer_sensitivity(
             sensitivity_method=sensitivity_method
         )  # analyze layer sensitivity
-        mp_config = self.get_mixed_precision_config(
-            target_bits=target_avg_bits
-        )  # get mixed precision config
+        mp_config = self.get_mixed_precision_config(target_bits=target_avg_bits)  # get mixed precision config
         original_ppl = evaluate_model(self.model, self.tokenizer, self.eval_data, self.eval_num_samples, self.device)  # evaluate original model
         original_size = get_model_size_mb(self.model)  # get original model size
-        quantized_model = self.apply_mixed_precision(
-            mp_config
-        )  # apply mixed precision quantization
+        quantized_model = self.apply_mixed_precision(mp_config)  # apply mixed precision quantization
         quantized_ppl = evaluate_model(quantized_model, self.tokenizer, self.eval_data, self.eval_num_samples, self.device)  # evaluate quantized model
-        quantized_size = get_model_size_mb(
-            quantized_model, mp_config
-        )  # get quantized model size
+        quantized_size = get_model_size_mb(quantized_model)  # get quantized model size
 
         results = run_full_analysis_report(
             sensitivity_scores,
