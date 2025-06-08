@@ -606,3 +606,427 @@ class LayerSensitivityAnalyzer:
         )
 
         return results
+
+
+
+import torch
+import torch.nn as nn
+import numpy as np
+from scipy.optimize import minimize, differential_evolution
+from typing import Dict, List, Tuple, Callable
+import copy
+from dataclasses import dataclass
+
+@dataclass
+class OptimizationConfig:
+    """Configuration for gradient-based bit allocation optimization."""
+    max_ppl_increase: float = 0.05  # Maximum allowed perplexity increase (5%)
+    min_bits: int = 4              # Minimum bits per layer
+    max_bits: int = 32             # Maximum bits per layer
+    bit_candidates: List[int] = None  # Allowed bit widths
+    optimization_method: str = "scipy"  # "scipy", "evolutionary", or "gradient_descent"
+    max_iterations: int = 100      # Maximum optimization iterations
+    tolerance: float = 1e-4        # Convergence tolerance
+    regularization_weight: float = 0.01  # L2 regularization on bit allocation
+    
+    def __post_init__(self):
+        if self.bit_candidates is None:
+            self.bit_candidates = [4, 8, 16, 32]
+
+
+class GradientBasedBitAllocator:
+    """
+    Gradient-based optimization for mixed precision bit allocation.
+    
+    Formulates the problem as:
+    minimize: average_bits + λ * regularization_term
+    subject to: perplexity_increase ≤ max_allowed_increase
+    """
+    
+    def __init__(self, analyzer, config: OptimizationConfig = None):
+        self.analyzer = analyzer
+        self.config = config or OptimizationConfig()
+        self.sensitivity_scores = analyzer.sensitivity_scores
+        self.layer_names = list(self.sensitivity_scores.keys())
+        self.n_layers = len(self.layer_names)
+        
+        # Cache baseline perplexity
+        self.baseline_ppl = self._compute_baseline_perplexity()
+        print(f"Baseline perplexity: {self.baseline_ppl:.4f}")
+        
+        # Precompute perplexity functions for each layer at different bit widths
+        self._precompute_layer_perplexities()
+    
+    def _compute_baseline_perplexity(self) -> float:
+        """Compute baseline perplexity for the original model."""
+        from model_utils import evaluate_model
+        return evaluate_model(
+            self.analyzer.model,
+            self.analyzer.tokenizer,
+            self.analyzer.eval_data,
+            self.analyzer.eval_num_samples,
+            self.analyzer.device,
+        )
+    
+    def _precompute_layer_perplexities(self):
+        """
+        Precompute perplexity impact for each layer at different bit widths.
+        This creates a lookup table to avoid repeated model evaluations during optimization.
+        """
+        print("Precomputing layer perplexity impacts...")
+        self.layer_ppl_impacts = {}
+        
+        for i, layer_name in enumerate(self.layer_names):
+            print(f"Analyzing layer {i+1}/{self.n_layers}: {layer_name}")
+            self.layer_ppl_impacts[layer_name] = {}
+            
+            for bits in self.config.bit_candidates:
+                if bits == 32:  # FP32 baseline
+                    self.layer_ppl_impacts[layer_name][bits] = 0.0
+                    continue
+                
+                # Create model with only this layer quantized
+                config = {layer_name: bits}
+                # Set all other layers to FP32
+                for other_layer in self.layer_names:
+                    if other_layer != layer_name:
+                        config[other_layer] = 32
+                
+                try:
+                    quantized_model = self.analyzer.apply_mixed_precision(config)
+                    ppl = evaluate_model(
+                        quantized_model,
+                        self.analyzer.tokenizer,
+                        self.analyzer.eval_data,
+                        self.analyzer.eval_num_samples,
+                        self.analyzer.device,
+                    )
+                    
+                    # Store the perplexity increase caused by quantizing this layer
+                    ppl_increase = (ppl - self.baseline_ppl) / self.baseline_ppl
+                    self.layer_ppl_impacts[layer_name][bits] = ppl_increase
+                    
+                    del quantized_model
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        
+                except Exception as e:
+                    print(f"Warning: Failed to evaluate {layer_name} at {bits} bits: {e}")
+                    self.layer_ppl_impacts[layer_name][bits] = 1.0  # High penalty
+    
+    def _estimate_total_perplexity_increase(self, bit_allocation: Dict[str, int]) -> float:
+        """
+        Estimate total perplexity increase from individual layer contributions.
+        Uses a combination of linear superposition and interaction terms.
+        """
+        total_increase = 0.0
+        
+        # Linear contribution from each layer
+        for layer_name, bits in bit_allocation.items():
+            if layer_name in self.layer_ppl_impacts and bits in self.layer_ppl_impacts[layer_name]:
+                layer_contribution = self.layer_ppl_impacts[layer_name][bits]
+                
+                # Weight by sensitivity score
+                sensitivity = self.sensitivity_scores.get(layer_name, 1.0)
+                weighted_contribution = layer_contribution * sensitivity
+                total_increase += weighted_contribution
+        
+        # Add interaction term (quadratic penalty for multiple low-bit layers)
+        low_bit_layers = sum(1 for bits in bit_allocation.values() if bits <= 8)
+        if low_bit_layers > 1:
+            interaction_penalty = 0.1 * (low_bit_layers - 1) ** 1.5
+            total_increase += interaction_penalty
+            
+        return total_increase
+    
+    def _objective_function(self, x: np.ndarray) -> float:
+        """
+        Objective function to minimize: weighted combination of compression and regularization.
+        
+        Args:
+            x: Continuous variables representing bit allocation (will be mapped to discrete bits)
+        """
+        # Map continuous variables to discrete bit allocations
+        bit_allocation = self._continuous_to_discrete_bits(x)
+        
+        # Calculate average bits (lower is better for compression)
+        avg_bits = np.mean(list(bit_allocation.values()))
+        
+        # Regularization term to prefer smoother allocations
+        bit_values = np.array(list(bit_allocation.values()))
+        regularization = self.config.regularization_weight * np.var(bit_values)
+        
+        return avg_bits + regularization
+    
+    def _constraint_function(self, x: np.ndarray) -> float:
+        """
+        Constraint function: perplexity increase should be ≤ max_allowed.
+        Returns negative value when constraint is satisfied.
+        """
+        bit_allocation = self._continuous_to_discrete_bits(x)
+        estimated_ppl_increase = self._estimate_total_perplexity_increase(bit_allocation)
+        
+        # Return negative when constraint is satisfied (ppl_increase ≤ max_allowed)
+        return self.config.max_ppl_increase - estimated_ppl_increase
+    
+    def _continuous_to_discrete_bits(self, x: np.ndarray) -> Dict[str, int]:
+        """Map continuous optimization variables to discrete bit allocations."""
+        bit_allocation = {}
+        
+        for i, layer_name in enumerate(self.layer_names):
+            # Map continuous value [0, 1] to discrete bit candidates
+            continuous_val = np.clip(x[i], 0, 1)
+            idx = int(continuous_val * (len(self.config.bit_candidates) - 1))
+            idx = min(idx, len(self.config.bit_candidates) - 1)
+            bit_allocation[layer_name] = self.config.bit_candidates[idx]
+            
+        return bit_allocation
+    
+    def optimize_scipy(self) -> Dict[str, int]:
+        """Use SciPy's constrained optimization."""
+        from scipy.optimize import minimize
+        
+        print("Running SciPy-based optimization...")
+        
+        # Initial guess: start with moderate precision
+        x0 = np.full(self.n_layers, 0.5)  # Middle of the range
+        
+        # Bounds: each variable in [0, 1]
+        bounds = [(0, 1) for _ in range(self.n_layers)]
+        
+        # Constraint: perplexity increase ≤ max_allowed
+        constraint = {
+            'type': 'ineq',
+            'fun': self._constraint_function
+        }
+        
+        result = minimize(
+            self._objective_function,
+            x0,
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraint,
+            options={'maxiter': self.config.max_iterations, 'ftol': self.config.tolerance}
+        )
+        
+        if result.success:
+            print("Optimization converged successfully!")
+        else:
+            print(f"Optimization warning: {result.message}")
+        
+        return self._continuous_to_discrete_bits(result.x)
+    
+    def optimize_evolutionary(self) -> Dict[str, int]:
+        """Use evolutionary/genetic algorithm for global optimization."""
+        print("Running evolutionary optimization...")
+        
+        bounds = [(0, 1) for _ in range(self.n_layers)]
+        
+        def combined_objective(x):
+            # Combine objective and constraint into single function
+            obj = self._objective_function(x)
+            constraint_violation = max(0, -self._constraint_function(x))
+            penalty = 1000 * constraint_violation  # Large penalty for constraint violation
+            return obj + penalty
+        
+        result = differential_evolution(
+            combined_objective,
+            bounds,
+            maxiter=self.config.max_iterations,
+            tol=self.config.tolerance,
+            seed=42
+        )
+        
+        return self._continuous_to_discrete_bits(result.x)
+    
+    def optimize_gradient_descent(self) -> Dict[str, int]:
+        """
+        Custom gradient descent using PyTorch for automatic differentiation.
+        This provides the most flexible approach for complex objective functions.
+        """
+        print("Running gradient descent optimization...")
+        
+        # Use continuous relaxation of discrete bit allocation
+        # x[i] represents the "softmax" weights over bit candidates for layer i
+        x = torch.randn(self.n_layers, len(self.config.bit_candidates), requires_grad=True, device='cpu')
+        optimizer = torch.optim.Adam([x], lr=0.01)
+        
+        best_allocation = None
+        best_objective = float('inf')
+        
+        for iteration in range(self.config.max_iterations):
+            optimizer.zero_grad()
+            
+            # Softmax to get probability distribution over bit candidates
+            bit_probs = torch.softmax(x, dim=1)
+            
+            # Expected bit allocation (continuous relaxation)
+            expected_bits = torch.sum(
+                bit_probs * torch.tensor(self.config.bit_candidates, dtype=torch.float32), dim=1
+            )
+            
+            # Objective: minimize average bits
+            avg_bits = torch.mean(expected_bits)
+            regularization = self.config.regularization_weight * torch.var(expected_bits)
+            objective = avg_bits + regularization
+            
+            # Estimate perplexity constraint using expected allocations
+            discrete_allocation = {}
+            for i, layer_name in enumerate(self.layer_names):
+                # Use expected bit value or sample from distribution
+                expected_bit = expected_bits[i].item()
+                # Map to nearest discrete value
+                closest_bit = min(self.config.bit_candidates, 
+                                key=lambda b: abs(b - expected_bit))
+                discrete_allocation[layer_name] = closest_bit
+            
+            ppl_increase = self._estimate_total_perplexity_increase(discrete_allocation)
+            
+            # Add penalty for constraint violation
+            constraint_penalty = max(0, ppl_increase - self.config.max_ppl_increase) * 1000
+            total_loss = objective + constraint_penalty
+            
+            total_loss.backward()
+            optimizer.step()
+            
+            if total_loss.item() < best_objective and ppl_increase <= self.config.max_ppl_increase:
+                best_objective = total_loss.item()
+                best_allocation = discrete_allocation.copy()
+            
+            if (iteration + 1) % 20 == 0:
+                print(f"Iteration {iteration + 1}: Loss={total_loss.item():.4f}, "
+                      f"Avg Bits={avg_bits.item():.2f}, PPL Increase={ppl_increase:.4f}")
+        
+        return best_allocation or discrete_allocation
+    
+    def optimize(self) -> Dict[str, int]:
+        """Main optimization function that selects the appropriate method."""
+        if self.config.optimization_method == "scipy":
+            return self.optimize_scipy()
+        elif self.config.optimization_method == "evolutionary":
+            return self.optimize_evolutionary()
+        elif self.config.optimization_method == "gradient_descent":
+            return self.optimize_gradient_descent()
+        else:
+            raise ValueError(f"Unknown optimization method: {self.config.optimization_method}")
+    
+    def validate_allocation(self, bit_allocation: Dict[str, int]) -> Tuple[float, bool]:
+        """Validate the final bit allocation by actually evaluating the quantized model."""
+        print("Validating optimized bit allocation...")
+        
+        quantized_model = self.analyzer.apply_mixed_precision(bit_allocation)
+        actual_ppl = evaluate_model(
+            quantized_model,
+            self.analyzer.tokenizer,
+            self.analyzer.eval_data,
+            self.analyzer.eval_num_samples,
+            self.analyzer.device,
+        )
+        
+        actual_ppl_increase = (actual_ppl - self.baseline_ppl) / self.baseline_ppl
+        constraint_satisfied = actual_ppl_increase <= self.config.max_ppl_increase
+        
+        print(f"Validation results:")
+        print(f"  Actual perplexity: {actual_ppl:.4f}")
+        print(f"  Actual increase: {actual_ppl_increase:.4f} (limit: {self.config.max_ppl_increase:.4f})")
+        print(f"  Constraint satisfied: {constraint_satisfied}")
+        
+        del quantized_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        return actual_ppl_increase, constraint_satisfied
+
+
+# Enhanced LayerSensitivityAnalyzer with gradient-based optimization
+class EnhancedLayerSensitivityAnalyzer(LayerSensitivityAnalyzer):
+    """Extended analyzer with gradient-based bit allocation optimization."""
+    
+    def get_gradient_based_config(
+        self, 
+        max_ppl_increase: float = 0.05,
+        optimization_method: str = "scipy",
+        bit_candidates: List[int] = None
+    ) -> Dict[str, int]:
+        """
+        Get optimized bit allocation using gradient-based optimization.
+        
+        Args:
+            max_ppl_increase: Maximum allowed perplexity increase (default 5%)
+            optimization_method: "scipy", "evolutionary", or "gradient_descent"
+            bit_candidates: List of allowed bit widths (default [4, 8, 16, 32])
+        """
+        if not self.sensitivity_scores:
+            raise ValueError("No sensitivity scores available. Run analyze_layer_sensitivity first.")
+        
+        config = OptimizationConfig(
+            max_ppl_increase=max_ppl_increase,
+            optimization_method=optimization_method,
+            bit_candidates=bit_candidates or [4, 8, 16, 32]
+        )
+        
+        optimizer = GradientBasedBitAllocator(self, config)
+        optimal_allocation = optimizer.optimize()
+        
+        # Validate the result
+        actual_increase, constraint_satisfied = optimizer.validate_allocation(optimal_allocation)
+        
+        if not constraint_satisfied:
+            print("Warning: Optimized allocation violates perplexity constraint!")
+            print("Consider increasing max_ppl_increase or using a more conservative approach.")
+        
+        # Print allocation summary
+        self._print_allocation_summary(optimal_allocation)
+        
+        return optimal_allocation
+    
+    def _print_allocation_summary(self, allocation: Dict[str, int]):
+        """Print summary of bit allocation."""
+        bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
+        for bits in allocation.values():
+            if bits in bit_counts:
+                bit_counts[bits] += 1
+        
+        total_layers = len(allocation)
+        print(f"\nOptimized bit allocation:")
+        for bits, count in bit_counts.items():
+            if count > 0:
+                percentage = count / total_layers * 100
+                print(f"  {bits}-bit: {count} layers ({percentage:.1f}%)")
+        
+        avg_bits = sum(allocation.values()) / len(allocation)
+        compression_ratio = 32 / avg_bits
+        print(f"  Average bits: {avg_bits:.2f}")
+        print(f"  Compression ratio: {compression_ratio:.2f}x")
+
+
+# Usage example
+def run_gradient_based_analysis():
+    """Example of how to use the gradient-based bit allocation."""
+    
+    # Initialize analyzer
+    analyzer = EnhancedLayerSensitivityAnalyzer(
+        model_name="facebook/opt-125m",
+        calibration_num_samples=50,
+        eval_num_samples=50
+    )
+    
+    # Analyze layer sensitivities first
+    sensitivity_scores = analyzer.analyze_layer_sensitivity(sensitivity_method="divergence")
+    
+    # Get gradient-based optimal configuration
+    optimal_config = analyzer.get_gradient_based_config(
+        max_ppl_increase=0.05,  # 5% max perplexity increase
+        optimization_method="scipy",  # or "evolutionary", "gradient_descent"
+        bit_candidates=[4, 8, 16, 32]
+    )
+    
+    print("\nOptimal bit allocation:")
+    for layer_name, bits in optimal_config.items():
+        sensitivity = sensitivity_scores[layer_name]
+        print(f"  {layer_name}: {bits} bits (sensitivity: {sensitivity:.4f})")
+    
+    return optimal_config
+
+if __name__ == "__main__":
+    optimal_config = run_gradient_based_analysis()

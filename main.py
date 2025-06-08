@@ -5,9 +5,9 @@ from layer_sensitivity_analyzer import LayerSensitivityAnalyzer
 from utils import run_analysis_for_models, plot_comparisons
 
 MODELS = [
-    # "facebook/opt-125m",
+    "facebook/opt-125m",
     # "EleutherAI/gpt-neo-125M",
-    "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    #"TinyLlama/TinyLlama-1.1B-Chat-v1.0",
 ]
 
 
