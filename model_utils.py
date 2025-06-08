@@ -8,9 +8,7 @@ def evaluate_model(model, tokenizer, eval_data, num_samples, device):
         # Prepare evaluation texts
         eval_texts = []
         for i in range(min(num_samples, len(eval_data["input_ids"]))):
-            text = tokenizer.decode(
-                eval_data["input_ids"][i], skip_special_tokens=True
-            )
+            text = tokenizer.decode(eval_data["input_ids"][i], skip_special_tokens=True)
             if len(text.strip()) > 0:
                 eval_texts.append(text)
 
@@ -76,83 +74,93 @@ def evaluate_model(model, tokenizer, eval_data, num_samples, device):
 
 def get_model_size_mb(model):
     """Calculate model size in MB considering mixed precision and quantized layers.
-    
+
     Automatically detects:
     - Standard parameter dtypes (float32, float16, bfloat16, etc.)
     - Custom quantized layers (W4A16, W6A16, W8A16, etc.)
     - Packed weight representations
-    
+
     Args:
         model: PyTorch model with potentially mixed precision layers
-    
+
     Returns:
         dict: Detailed breakdown of model size
     """
-    
+
     def get_dtype_bits(dtype):
         """Map PyTorch dtypes to their bit sizes"""
         dtype_bits = {
-            torch.float32: 32, torch.float: 32,
-            torch.float64: 64, torch.double: 64,
-            torch.float16: 16, torch.half: 16,
+            torch.float32: 32,
+            torch.float: 32,
+            torch.float64: 64,
+            torch.double: 64,
+            torch.float16: 16,
+            torch.half: 16,
             torch.bfloat16: 16,
-            torch.int32: 32, torch.int: 32,
-            torch.int64: 64, torch.long: 64,
-            torch.int16: 16, torch.short: 16,
+            torch.int32: 32,
+            torch.int: 32,
+            torch.int64: 64,
+            torch.long: 64,
+            torch.int16: 16,
+            torch.short: 16,
             torch.int8: 8,
             torch.uint8: 8,
             torch.bool: 1,
         }
         return dtype_bits.get(dtype, 32)  # Default to 32 if unknown
-    
+
     def detect_quantized_layer_info(module):
         """Detect quantized layer type and return bit width info"""
         module_name = module.__class__.__name__
-        
+
         # Check for common quantized layer patterns
-        if 'W4A16' in module_name or hasattr(module, 'int4_weights') or hasattr(module, 'packed_weights'):
-            return 4, 'W4A16'
-        elif 'W6A16' in module_name or hasattr(module, 'int6_weights'):
-            return 6, 'W6A16'
-        elif 'W8A16' in module_name or hasattr(module, 'int8_weights'):
-            return 8, 'W8A16'
-        elif 'W16A16' in module_name:
-            return 16, 'W16A16'
-        
+        if (
+            "W4A16" in module_name
+            or hasattr(module, "int4_weights")
+            or hasattr(module, "packed_weights")
+        ):
+            return 4, "W4A16"
+        elif "W6A16" in module_name or hasattr(module, "int6_weights"):
+            return 6, "W6A16"
+        elif "W8A16" in module_name or hasattr(module, "int8_weights"):
+            return 8, "W8A16"
+        elif "W16A16" in module_name:
+            return 16, "W16A16"
+
         return None, None
-    
+
     param_size = 0
     buffer_size = 0
     layer_breakdown = {}
     quantized_layers = {}
-    
+
     # Analyze each module
     for name, module in model.named_modules():
         if len(list(module.children())) > 0:  # Skip parent modules
             continue
-            
+
         # Check if this is a quantized layer
         weight_bits, quant_type = detect_quantized_layer_info(module)
-        
+
         if weight_bits is not None:
             # Handle quantized layers
             quantized_layers[name] = quant_type
-            
+
             # Calculate size based on quantized representation
             module_param_size = 0
             module_buffer_size = 0
-            
+
             for param_name, param in module.named_parameters():
                 # For quantized layers, weights are typically stored in buffers
                 # Parameters might be scales, zero_points, etc. (usually float)
                 bits = get_dtype_bits(param.dtype)
                 size = param.nelement() * (bits / 8)
                 module_param_size += size
-            
+
             for buffer_name, buffer in module.named_buffers():
-                if 'weight' in buffer_name.lower() or 'packed' in buffer_name.lower():
+                if "weight" in buffer_name.lower() or "packed" in buffer_name.lower():
                     # This is the quantized weight data
-                    if 'packed' in buffer_name.lower():
+                    if "packed" in buffer_name.lower():
                         # Packed weights: use actual buffer size since packing is already done
                         # Each byte stores multiple weights efficiently
                         size = buffer.nelement() * buffer.element_size()
@@ -164,43 +172,42 @@ def get_model_size_mb(model):
                     # Other buffers (scales, zero_points, etc.)
                     size = buffer.nelement() * buffer.element_size()
                 module_buffer_size += size
-            
+
             layer_breakdown[name] = {
-                'type': quant_type,
-                'param_size': module_param_size,
-                'buffer_size': module_buffer_size,
-                'total_size': module_param_size + module_buffer_size
+                "type": quant_type,
+                "param_size": module_param_size,
+                "buffer_size": module_buffer_size,
+                "total_size": module_param_size + module_buffer_size,
             }
-            
+
             param_size += module_param_size
             buffer_size += module_buffer_size
-        
+
         else:
             # Handle standard (non-quantized) layers
             module_param_size = 0
             module_buffer_size = 0
-            
+
             for param_name, param in module.named_parameters():
                 bits = get_dtype_bits(param.dtype)
                 size = param.nelement() * (bits / 8)
                 module_param_size += size
-            
+
             for buffer_name, buffer in module.named_buffers():
                 size = buffer.nelement() * buffer.element_size()
                 module_buffer_size += size
-            
+
             if module_param_size > 0 or module_buffer_size > 0:
                 layer_breakdown[name] = {
-                    'type': f'Standard ({module.__class__.__name__})',
-                    'param_size': module_param_size,
-                    'buffer_size': module_buffer_size,
-                    'total_size': module_param_size + module_buffer_size
+                    "type": f"Standard ({module.__class__.__name__})",
+                    "param_size": module_param_size,
+                    "buffer_size": module_buffer_size,
+                    "total_size": module_param_size + module_buffer_size,
                 }
-                
+
                 param_size += module_param_size
                 buffer_size += module_buffer_size
-    
+
     total_size_bytes = param_size + buffer_size
     total_size_mb = total_size_bytes / (1024**2)
-    return total_size_mb 
-
+    return total_size_mb

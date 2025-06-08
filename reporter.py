@@ -24,7 +24,9 @@ def print_summary(all_results: Dict):
         print(f"  Original Perplexity:      {res.get('original_perplexity', 'N/A')}")
         print(f"  Quantized Perplexity:     {res.get('quantized_perplexity', 'N/A')}")
         print(f"  Original Model Size (MB): {res.get('original_model_size_mb', 'N/A')}")
-        print(f"  Quantized Model Size (MB):{res.get('quantized_model_size_mb', 'N/A')}")
+        print(
+            f"  Quantized Model Size (MB):{res.get('quantized_model_size_mb', 'N/A')}"
+        )
         print(f"  Bit Distribution:         {res.get('bit_distribution', 'N/A')}")
         print("-")
 
@@ -42,7 +44,9 @@ def run_full_analysis_report(
     print("=" * 70)
     print("LAYER-WISE SENSITIVITY ANALYSIS")
     print("=" * 70)
-    print(f"\nLayer Sensitivity Scores ({sensitivity_method}, higher = more sensitive):")
+    print(
+        f"\nLayer Sensitivity Scores ({sensitivity_method}, higher = more sensitive):"
+    )
     print("-" * 70)
     sorted_scores = sorted(sensitivity_scores.items(), key=lambda x: x[1], reverse=True)
     for layer_name, score in sorted_scores:

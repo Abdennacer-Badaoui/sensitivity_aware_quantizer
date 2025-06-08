@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from layer_sensitivity_analyzer import LayerSensitivityAnalyzer
 from model_utils import get_model_size_mb
 
+
 def run_analysis_for_models(
     results_dir,
     models,
@@ -13,9 +14,9 @@ def run_analysis_for_models(
     eval_num_samples=100,
     batch_size=32,
     sensitivity_method="divergence",
-    config_strategy = "aggressive",
-    use_iterative = False,
-    max_perplexity_increase = 0.1,
+    config_strategy="aggressive",
+    use_iterative=False,
+    max_perplexity_increase=0.1,
 ):
     """
     Run sensitivity analysis for a list of models and save results.
@@ -54,7 +55,7 @@ def run_analysis_for_models(
                 "quantized_model_size_mb": results.get("quantized_model_size_mb"),
                 "sensitivity_scores": results.get("sensitivity_scores"),
                 "mixed_precision_config": results.get("mixed_precision_config"),
-                "bit_distribution": results.get("bit_distribution"),         
+                "bit_distribution": results.get("bit_distribution"),
             }
 
             # Clean up quantized model from results
@@ -65,7 +66,8 @@ def run_analysis_for_models(
 
             # Save individual results
             out_path = os.path.join(
-                results_dir, f"{model_name.replace('/', '_')}_{sensitivity_method}_{config_strategy}.json"
+                results_dir,
+                f"{model_name.replace('/', '_')}_{sensitivity_method}_{config_strategy}.json",
             )
             save_json(model_results, out_path)
 
@@ -82,7 +84,14 @@ def run_analysis_for_models(
     return all_results
 
 
-def plot_comparisons(plots_dir, all_results, sensitivity_method, config_strategy, use_iterative, max_perplexity_increase):
+def plot_comparisons(
+    plots_dir,
+    all_results,
+    sensitivity_method,
+    config_strategy,
+    use_iterative,
+    max_perplexity_increase,
+):
     """
     Plot model size and perplexity comparisons for all analyzed models.
     """
@@ -132,10 +141,12 @@ def plot_comparisons(plots_dir, all_results, sensitivity_method, config_strategy
     ax1.set_xticks(x)
     ax1.set_xticklabels(model_names, rotation=45, ha="right")
     ax1.legend(loc="upper left")
-    ax1.set_title(f"Model Size (Sensitivity Method: {sensitivity_method}, "
-                 f"Config Strategy: {config_strategy}, "
-                 f"Iterative: {use_iterative}, "
-                 f"Max permitted PPL Increase: {max_perplexity_increase})")
+    ax1.set_title(
+        f"Model Size (Sensitivity Method: {sensitivity_method}, "
+        f"Config Strategy: {config_strategy}, "
+        f"Iterative: {use_iterative}, "
+        f"Max permitted PPL Increase: {max_perplexity_increase})"
+    )
 
     # Add size reduction percentage
     for i, (orig, quant) in enumerate(zip(orig_size, quant_size)):
@@ -166,10 +177,12 @@ def plot_comparisons(plots_dir, all_results, sensitivity_method, config_strategy
     ax2.set_xticks(x)
     ax2.set_xticklabels(model_names, rotation=45, ha="right")
     ax2.legend(loc="upper left")
-    ax2.set_title(f"Model Perplexity (Sensitivity Method: {sensitivity_method}, "
-                 f"Config Strategy: {config_strategy}, "
-                 f"Iterative: {use_iterative}, "
-                 f"Max permitted PPL Increase: {max_perplexity_increase})")
+    ax2.set_title(
+        f"Model Perplexity (Sensitivity Method: {sensitivity_method}, "
+        f"Config Strategy: {config_strategy}, "
+        f"Iterative: {use_iterative}, "
+        f"Max permitted PPL Increase: {max_perplexity_increase})"
+    )
 
     # Add perplexity degradation percentage
     for i, (orig, quant) in enumerate(zip(orig_ppl, quant_ppl)):
@@ -187,7 +200,11 @@ def plot_comparisons(plots_dir, all_results, sensitivity_method, config_strategy
     ax2.set_ylim(0, max(max(orig_ppl), max(quant_ppl)) * 1.2)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, f"model_comparison_{sensitivity_method}_{config_strategy}.png"))
+    plt.savefig(
+        os.path.join(
+            plots_dir, f"model_comparison_{sensitivity_method}_{config_strategy}.png"
+        )
+    )
     plt.close()
 
 

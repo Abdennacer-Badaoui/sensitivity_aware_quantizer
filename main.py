@@ -5,10 +5,11 @@ from layer_sensitivity_analyzer import LayerSensitivityAnalyzer
 from utils import run_analysis_for_models, plot_comparisons
 
 MODELS = [
-    "facebook/opt-125m",            
-    #"EleutherAI/gpt-neo-125M",                   
-    #"TinyLlama/TinyLlama-1.1B-Chat-v1.0",  
+    # "facebook/opt-125m",
+    # "EleutherAI/gpt-neo-125M",
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
 ]
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Model Quantization Analysis Tool")
@@ -41,10 +42,7 @@ def parse_args():
         help="Number of samples for calibration",
     )
     parser.add_argument(
-        "--eval_samples", 
-        type=int, 
-        default=100, 
-        help="Number of samples for evaluation"
+        "--eval_samples", type=int, default=100, help="Number of samples for evaluation"
     )
 
     # Sensitivity analysis methods
@@ -60,7 +58,15 @@ def parse_args():
         "--config_strategy",
         type=str,
         default="int4_only",
-        choices=["adaptive_threshold", "percentile", "exponential", "aggressive", "conservative", "int4_only"],
+        choices=[
+            "adaptive_threshold",
+            "percentile",
+            "exponential",
+            "aggressive",
+            "conservative",
+            "int8_only",
+            "int4_only",
+        ],
         help="Configuration strategy for quantization",
     )
 
@@ -98,7 +104,6 @@ def parse_args():
     return parser.parse_args()
 
 
-
 def main():
     args = parse_args()
 
@@ -122,7 +127,14 @@ def main():
     )
 
     if all_results:
-        plot_comparisons(args.plots_dir, all_results, args.sensitivity_method, args.config_strategy, args.use_iterative, args.max_ppl_increase)
+        plot_comparisons(
+            args.plots_dir,
+            all_results,
+            args.sensitivity_method,
+            args.config_strategy,
+            args.use_iterative,
+            args.max_ppl_increase,
+        )
         print(
             f"\nAnalysis and visualizations complete. See {args.results_dir} and {args.plots_dir}."
         )

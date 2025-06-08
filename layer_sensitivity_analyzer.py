@@ -9,7 +9,12 @@ from datasets import load_dataset
 from sensitivity_metrics import SensitivityMetrics
 from reporter import run_full_analysis_report
 from model_utils import evaluate_model, get_model_size_mb
-from quantizer import replace_single_linear_with_target, W4A16LinearLayer, W8A16LinearLayer, W16A16LinearLayer
+from quantizer import (
+    replace_single_linear_with_target,
+    W4A16LinearLayer,
+    W8A16LinearLayer,
+    W16A16LinearLayer,
+)
 
 
 class LayerSensitivityAnalyzer:
@@ -96,7 +101,7 @@ class LayerSensitivityAnalyzer:
             # layers[name] = module
 
             # Only include layers that have weights
-            if isinstance(module, nn.Linear) : # and "lm_head" not in name: 
+            if isinstance(module, nn.Linear):  # and "lm_head" not in name:
                 layers[name] = module
         return layers
 
@@ -142,7 +147,9 @@ class LayerSensitivityAnalyzer:
             }
         return stats
 
-    def analyze_layer_sensitivity(self, bits: int = 8, sensitivity_method: str = "divergence"):
+    def analyze_layer_sensitivity(
+        self, bits: int = 8, sensitivity_method: str = "divergence"
+    ):
         """Analyze the sensitivity of each layer to quantization using the specified method."""
         print(f"Analyzing layer sensitivity with {bits}-bit quantization...")
         baseline_outputs = self._compute_baseline()
@@ -156,14 +163,22 @@ class LayerSensitivityAnalyzer:
             replace_single_linear_with_target(
                 model_copy,
                 W8A16LinearLayer,  # Assuming we want to quantize Linear layers
-                layer_name
+                layer_name,
             )
 
             quantized_outputs = self._compute_quantized(model_copy)
             if sensitivity_method == "divergence":
-                sensitivity_scores[layer_name] = SensitivityMetrics.compute_divergence_based_sensitivities(baseline_outputs, quantized_outputs)
+                sensitivity_scores[
+                    layer_name
+                ] = SensitivityMetrics.compute_divergence_based_sensitivities(
+                    baseline_outputs, quantized_outputs
+                )
             elif sensitivity_method == "hessian":
-                sensitivity_scores[layer_name] = SensitivityMetrics.compute_hessian_based_sensitivities(model_copy, layer_name, layer_module, self.calibration_data) 
+                sensitivity_scores[
+                    layer_name
+                ] = SensitivityMetrics.compute_hessian_based_sensitivities(
+                    model_copy, layer_name, layer_module, self.calibration_data
+                )
 
             # Normalize activation magnitude to [0,1] range
             if layer_name in activation_stats:
@@ -187,7 +202,7 @@ class LayerSensitivityAnalyzer:
         """Compute and store outputs from the original model."""
         if hasattr(self, "_cached_baseline_outputs"):
             return self._cached_baseline_outputs
-        
+
         baseline_outputs = []
         with torch.no_grad():
             for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
@@ -238,10 +253,12 @@ class LayerSensitivityAnalyzer:
                 )
         return quantized_outputs
 
-    def get_sensitivity_based_config(self, sensitivity_distribution: str = "adaptive_threshold"):
+    def get_sensitivity_based_config(
+        self, sensitivity_distribution: str = "adaptive_threshold"
+    ):
         """
         Generate mixed precision configuration based on sensitivity score distribution.
-        
+
         Args:
             sensitivity_distribution: Strategy for bit allocation
                 - "adaptive_threshold": Use statistical thresholds based on sensitivity distribution
@@ -249,44 +266,49 @@ class LayerSensitivityAnalyzer:
                 - "exponential": Use exponential decay mapping
                 - "conservative": Prioritize model accuracy over compression
                 - "aggressive": Prioritize compression over accuracy
+                - "int8_only": Use INT8 for all layers (not recommended unless with iterative refinement)
                 - "int4_only": Use INT4 for all layers (not recommended unless with iterative refinement)
         """
         if not self.sensitivity_scores:
-            raise ValueError("No sensitivity scores available. Run analyze_layer_sensitivity first.")
-        
+            raise ValueError(
+                "No sensitivity scores available. Run analyze_layer_sensitivity first."
+            )
+
         # Get sensitivity values and statistics
         sensitivities = list(self.sensitivity_scores.values())
         mean_sens = np.mean(sensitivities)
         std_sens = np.std(sensitivities)
         min_sens = min(sensitivities)
         max_sens = max(sensitivities)
-        
-        print(f"Sensitivity stats - Mean: {mean_sens:.4f}, Std: {std_sens:.4f}, Range: [{min_sens:.4f}, {max_sens:.4f}]")
-        
+
+        print(
+            f"Sensitivity stats - Mean: {mean_sens:.4f}, Std: {std_sens:.4f}, Range: [{min_sens:.4f}, {max_sens:.4f}]"
+        )
+
         config = {}
-        
+
         if sensitivity_distribution == "adaptive_threshold":
             # Use statistical thresholds based on mean and standard deviation
-            high_threshold = mean_sens + 0.5 * std_sens    # Very sensitive layers
-            medium_threshold = mean_sens                    # Moderately sensitive layers
-            low_threshold = mean_sens - 0.5 * std_sens     # Less sensitive layers
-            
+            high_threshold = mean_sens + 0.5 * std_sens  # Very sensitive layers
+            medium_threshold = mean_sens  # Moderately sensitive layers
+            low_threshold = mean_sens - 0.5 * std_sens  # Less sensitive layers
+
             for layer_name, sensitivity in self.sensitivity_scores.items():
                 if sensitivity >= high_threshold:
                     config[layer_name] = 32  # Keep most sensitive layers in FP32
                 elif sensitivity >= medium_threshold:
                     config[layer_name] = 16  # Medium sensitivity -> BF16
                 elif sensitivity >= low_threshold:
-                    config[layer_name] = 8   # Lower sensitivity -> INT8
+                    config[layer_name] = 8  # Lower sensitivity -> INT8
                 else:
-                    config[layer_name] = 4   # Least sensitive -> INT4
-                    
+                    config[layer_name] = 4  # Least sensitive -> INT4
+
         elif sensitivity_distribution == "percentile":
             # Use percentile-based allocation
             p75 = np.percentile(sensitivities, 75)  # Top 25% most sensitive
             p50 = np.percentile(sensitivities, 50)  # Top 50% most sensitive
             p25 = np.percentile(sensitivities, 25)  # Top 75% most sensitive
-            
+
             for layer_name, sensitivity in self.sensitivity_scores.items():
                 if sensitivity >= p75:
                     config[layer_name] = 32
@@ -296,7 +318,7 @@ class LayerSensitivityAnalyzer:
                     config[layer_name] = 8
                 else:
                     config[layer_name] = 4
-                    
+
         elif sensitivity_distribution == "exponential":
             # Exponential mapping: more gradual transition
             # Normalize sensitivities to [0, 1] range
@@ -304,13 +326,13 @@ class LayerSensitivityAnalyzer:
             sens_range = max_sens - min_sens
             if sens_range == 0:  # All layers have same sensitivity
                 sens_range = 1
-                
+
             for layer_name, sensitivity in self.sensitivity_scores.items():
                 normalized = (sensitivity - min_sens) / sens_range
                 # Apply exponential mapping to emphasize high sensitivity
                 exp_score = np.exp(2 * normalized) / np.exp(2)  # Scale to [1/e^2, 1]
                 norm_sensitivities[layer_name] = exp_score
-                
+
             for layer_name, norm_sens in norm_sensitivities.items():
                 if norm_sens >= 0.75:
                     config[layer_name] = 32
@@ -320,13 +342,13 @@ class LayerSensitivityAnalyzer:
                     config[layer_name] = 8
                 else:
                     config[layer_name] = 4
-                    
+
         elif sensitivity_distribution == "conservative":
             # Conservative: err on the side of higher precision
             low_threshold = mean_sens - 0.25 * std_sens
             medium_threshold = mean_sens + 0.25 * std_sens
             high_threshold = mean_sens + 0.75 * std_sens
-            
+
             for layer_name, sensitivity in self.sensitivity_scores.items():
                 if sensitivity >= high_threshold:
                     config[layer_name] = 32
@@ -335,14 +357,16 @@ class LayerSensitivityAnalyzer:
                 elif sensitivity >= low_threshold:
                     config[layer_name] = 16
                 else:
-                    config[layer_name] = 8   # Avoid INT4 for most layers
-                    
+                    config[layer_name] = 8  # Avoid INT4 for most layers
+
         elif sensitivity_distribution == "aggressive":
             # Aggressive: prioritize compression
-            high_threshold = mean_sens + 1.0 * std_sens    # Only very high sensitivity gets FP32
+            high_threshold = (
+                mean_sens + 1.0 * std_sens
+            )  # Only very high sensitivity gets FP32
             medium_threshold = mean_sens + 0.25 * std_sens
             low_threshold = mean_sens - 0.25 * std_sens
-            
+
             for layer_name, sensitivity in self.sensitivity_scores.items():
                 if sensitivity >= high_threshold:
                     config[layer_name] = 32
@@ -353,101 +377,124 @@ class LayerSensitivityAnalyzer:
                 else:
                     config[layer_name] = 4
 
+        elif sensitivity_distribution == "int8_only":
+            # INT8 only: all layers quantized to INT8
+            for layer_name in self.sensitivity_scores.keys():
+                config[layer_name] = 8
+
         elif sensitivity_distribution == "int4_only":
             # INT4 only: all layers quantized to INT4
             for layer_name in self.sensitivity_scores.keys():
                 config[layer_name] = 4
-        
+
         # Print distribution summary
         bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
         for bits in config.values():
             bit_counts[bits] += 1
-        
+
         total_layers = len(config)
         print(f"\nBit allocation distribution:")
         print(f"FP32: {bit_counts[32]} layers ({bit_counts[32]/total_layers*100:.1f}%)")
         print(f"BF16: {bit_counts[16]} layers ({bit_counts[16]/total_layers*100:.1f}%)")
         print(f"INT8: {bit_counts[8]} layers ({bit_counts[8]/total_layers*100:.1f}%)")
         print(f"INT4: {bit_counts[4]} layers ({bit_counts[4]/total_layers*100:.1f}%)")
-        
+
         # Calculate average bits and compression ratio
-        #total_bits = sum(bits for bits in config.values())
-        #avg_bits = total_bits / total_layers
-        #compression_ratio = 32 / avg_bits
-        #print(f"Average bits per layer: {avg_bits:.2f}")
-        #print(f"Theoretical compression ratio: {compression_ratio:.2f}x")
-        
+        # total_bits = sum(bits for bits in config.values())
+        # avg_bits = total_bits / total_layers
+        # compression_ratio = 32 / avg_bits
+        # print(f"Average bits per layer: {avg_bits:.2f}")
+        # print(f"Theoretical compression ratio: {compression_ratio:.2f}x")
+
         return config
 
-    def get_iterative_config(self, max_perplexity_increase: float = 0.1, 
-                            initial_strategy: str = "aggressive"):
+    def get_iterative_config(
+        self, max_perplexity_increase: float = 0.1, initial_strategy: str = "aggressive"
+    ):
         """
         Iteratively adjust quantization config based on perplexity feedback.
         Start aggressive and progressively increase precision for most sensitive layers.
-        
+
         Args:
             max_perplexity_increase: Maximum allowed perplexity increase (relative)
             initial_strategy: Starting quantization strategy
         """
-        print(f"Starting iterative configuration with max perplexity increase: {max_perplexity_increase}")
-        
+        print(
+            f"Starting iterative configuration with max perplexity increase: {max_perplexity_increase}"
+        )
+
         # Get baseline perplexity
-        baseline_ppl = evaluate_model(self.model, self.tokenizer, self.eval_data, 
-                                    self.eval_num_samples, self.device)
+        baseline_ppl = evaluate_model(
+            self.model,
+            self.tokenizer,
+            self.eval_data,
+            self.eval_num_samples,
+            self.device,
+        )
         print(f"Baseline perplexity: {baseline_ppl:.4f}")
-        
+
         # Start with aggressive configuration
         current_config = self.get_sensitivity_based_config(initial_strategy)
-        
+
         # Sort layers by sensitivity (descending) for upgrade priority
-        sorted_layers = sorted(self.sensitivity_scores.items(), 
-                            key=lambda x: x[1], reverse=True)
-        
+        sorted_layers = sorted(
+            self.sensitivity_scores.items(), key=lambda x: x[1], reverse=True
+        )
+
         upgrade_order = [4, 8, 16, 32]  # Priority order for upgrades
-        
+
         iteration = 0
-        while iteration < 10:  # Max iterations to prevent infinite loop
+        while iteration < 100:  # Max iterations to prevent infinite loop
             iteration += 1
             print(f"\nIteration {iteration}:")
-            
+
             # Test current configuration
             quantized_model = self.apply_mixed_precision(current_config)
-            current_ppl = evaluate_model(quantized_model, self.tokenizer, 
-                                    self.eval_data, self.eval_num_samples, self.device)
-            
+            current_ppl = evaluate_model(
+                quantized_model,
+                self.tokenizer,
+                self.eval_data,
+                self.eval_num_samples,
+                self.device,
+            )
+
             perplexity_increase = (current_ppl - baseline_ppl) / baseline_ppl
-            print(f"Current perplexity: {current_ppl:.4f} (increase: {perplexity_increase:.3f})")
-            
+            print(
+                f"Current perplexity: {current_ppl:.4f} (increase: {perplexity_increase:.3f})"
+            )
+
             if perplexity_increase <= max_perplexity_increase:
                 print("Perplexity constraint satisfied!")
                 break
-                
+
             # Find layers to upgrade (increase precision)
             upgraded = False
             for layer_name, sensitivity in sorted_layers:
                 current_bits = current_config[layer_name]
-                
+
                 # Find next higher precision level
                 next_bits = None
                 for bits in upgrade_order:
                     if bits > current_bits:
                         next_bits = bits
                         break
-                        
+
                 if next_bits is not None:
-                    print(f"Upgrading {layer_name} from {current_bits} to {next_bits} bits")
+                    print(
+                        f"Upgrading {layer_name} from {current_bits} to {next_bits} bits"
+                    )
                     current_config[layer_name] = next_bits
                     upgraded = True
                     break
-                    
+
             if not upgraded:
                 print("No more layers to upgrade. Stopping.")
                 break
-                
+
             del quantized_model
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        
+
         return current_config
 
     def apply_mixed_precision(self, config: Dict[str, int]):
@@ -467,27 +514,21 @@ class LayerSensitivityAnalyzer:
                         continue
                     current = getattr(current, part)
 
-                if bits==32:
+                if bits == 32:
                     continue
 
-                elif bits==16:
+                elif bits == 16:
                     replace_single_linear_with_target(
-                        quantized_model,
-                        W16A16LinearLayer,  
-                        layer_name
+                        quantized_model, W16A16LinearLayer, layer_name
                     )
 
-                elif bits==8:
+                elif bits == 8:
                     replace_single_linear_with_target(
-                        quantized_model,
-                        W8A16LinearLayer,  
-                        layer_name
+                        quantized_model, W8A16LinearLayer, layer_name
                     )
-                else: # bits==4
+                else:  # bits==4
                     replace_single_linear_with_target(
-                        quantized_model,
-                        W4A16LinearLayer,  
-                        layer_name
+                        quantized_model, W4A16LinearLayer, layer_name
                     )
 
             except Exception as e:
@@ -495,50 +536,65 @@ class LayerSensitivityAnalyzer:
                 continue
         return quantized_model
 
-    def run_full_analysis(self, sensitivity_method: str = "divergence", 
-                        config_strategy: str = "aggressive",
-                        use_iterative: bool = True,
-                        max_perplexity_increase: float = 0.1):
+    def run_full_analysis(
+        self,
+        sensitivity_method: str = "divergence",
+        config_strategy: str = "aggressive",
+        use_iterative: bool = True,
+        max_perplexity_increase: float = 0.1,
+    ):
         """
         Run full analysis with the new sensitivity-based configuration approach.
-        
+
         Args:
             sensitivity_method: Method for computing sensitivity scores
             config_strategy: Strategy for bit allocation based on sensitivity
             use_iterative: Whether to use iterative refinement based on perplexity
             max_perplexity_increase: Max allowed perplexity increase (for iterative mode)
         """
-        print("="*60)
+        print("=" * 60)
         print("RUNNING FULL MIXED PRECISION ANALYSIS")
-        print("="*60)
-        
+        print("=" * 60)
+
         # Analyze layer sensitivity
-        sensitivity_scores = self.analyze_layer_sensitivity(sensitivity_method=sensitivity_method)
-        
+        sensitivity_scores = self.analyze_layer_sensitivity(
+            sensitivity_method=sensitivity_method
+        )
+
         # Get mixed precision config based on sensitivity
         if use_iterative:
             mp_config = self.get_iterative_config(
                 max_perplexity_increase=max_perplexity_increase,
-                initial_strategy=config_strategy
+                initial_strategy=config_strategy,
             )
         else:
             mp_config = self.get_sensitivity_based_config(config_strategy)
-        
+
         # Evaluate models
         print("\nEvaluating models...")
-        original_ppl = evaluate_model(self.model, self.tokenizer, self.eval_data, 
-                                    self.eval_num_samples, self.device)
+        original_ppl = evaluate_model(
+            self.model,
+            self.tokenizer,
+            self.eval_data,
+            self.eval_num_samples,
+            self.device,
+        )
         original_size = get_model_size_mb(self.model)
-        
+
         quantized_model = self.apply_mixed_precision(mp_config)
-        quantized_ppl = evaluate_model(quantized_model, self.tokenizer, self.eval_data, 
-                                    self.eval_num_samples, self.device)
+        quantized_ppl = evaluate_model(
+            quantized_model,
+            self.tokenizer,
+            self.eval_data,
+            self.eval_num_samples,
+            self.device,
+        )
         quantized_size = get_model_size_mb(quantized_model)
-        
+
         # Calculate average bits for reporting
         # total_bits = sum(bits for bits in mp_config.values())
         # avg_bits = total_bits / len(mp_config)
-        
+
         results = run_full_analysis_report(
             sensitivity_scores,
             mp_config,
@@ -548,5 +604,5 @@ class LayerSensitivityAnalyzer:
             quantized_size,
             sensitivity_method=sensitivity_method,
         )
-        
+
         return results
