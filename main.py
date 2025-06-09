@@ -5,8 +5,8 @@ from layer_sensitivity_analyzer import LayerSensitivityAnalyzer
 from utils import run_analysis_for_models, plot_comparisons
 
 MODELS = [
-    # "facebook/opt-125m",
-    # "EleutherAI/gpt-neo-125M",
+    "facebook/opt-125m",
+    "EleutherAI/gpt-neo-125M",
     "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
 ]
 
@@ -72,16 +72,15 @@ def parse_args():
 
     parser.add_argument(
         "--use_iterative",
-        type=bool,
-        default=True,
-        choices=[True, False],
-        help="Use iterative quantization method",
+        action="store_true",
+        default=False,
+        help="Use iterative quantization method (default: False). Use --use_iterative to enable.",
     )
 
     parser.add_argument(
         "--max_ppl_increase",
         type=float,
-        default=0.1,
+        default=0.05,
         help="Maximum allowed increase in perplexity during quantization",
     )
 

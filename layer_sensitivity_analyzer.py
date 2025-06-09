@@ -101,7 +101,7 @@ class LayerSensitivityAnalyzer:
             # layers[name] = module
 
             # Only include layers that have weights
-            if isinstance(module, nn.Linear):  # and "lm_head" not in name:
+            if isinstance(module, nn.Linear) and "lm_head" not in name:
                 layers[name] = module
         return layers
 
@@ -538,10 +538,10 @@ class LayerSensitivityAnalyzer:
 
     def run_full_analysis(
         self,
-        sensitivity_method: str = "divergence",
-        config_strategy: str = "aggressive",
-        use_iterative: bool = True,
-        max_perplexity_increase: float = 0.1,
+        sensitivity_method,
+        config_strategy,
+        use_iterative,
+        max_perplexity_increase,
     ):
         """
         Run full analysis with the new sensitivity-based configuration approach.

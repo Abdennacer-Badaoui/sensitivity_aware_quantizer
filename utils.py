@@ -67,7 +67,7 @@ def run_analysis_for_models(
             # Save individual results
             out_path = os.path.join(
                 results_dir,
-                f"{model_name.replace('/', '_')}_{sensitivity_method}_{config_strategy}.json",
+                f"{model_name.replace('/', '_')}_{sensitivity_method}_{config_strategy}_{use_iterative}.json",
             )
             save_json(model_results, out_path)
 
@@ -202,7 +202,7 @@ def plot_comparisons(
     plt.tight_layout()
     plt.savefig(
         os.path.join(
-            plots_dir, f"model_comparison_{sensitivity_method}_{config_strategy}.png"
+            plots_dir, f"model_comparison_{sensitivity_method}_{config_strategy}_{use_iterative}.png"
         )
     )
     plt.close()

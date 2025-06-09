@@ -77,14 +77,14 @@ def get_model_size_mb(model):
 
     Automatically detects:
     - Standard parameter dtypes (float32, float16, bfloat16, etc.)
-    - Custom quantized layers (W4A16, W6A16, W8A16, etc.)
+    - Custom quantized layers (W4A16, W8A16, etc.)
     - Packed weight representations
 
     Args:
         model: PyTorch model with potentially mixed precision layers
 
     Returns:
-        dict: Detailed breakdown of model size
+        total_size_mb: model size in MB 
     """
 
     def get_dtype_bits(dtype):
@@ -114,18 +114,12 @@ def get_model_size_mb(model):
         module_name = module.__class__.__name__
 
         # Check for common quantized layer patterns
-        if (
-            "W4A16" in module_name
-            or hasattr(module, "int4_weights")
-            or hasattr(module, "packed_weights")
-        ):
-            return 4, "W4A16"
-        elif "W6A16" in module_name or hasattr(module, "int6_weights"):
-            return 6, "W6A16"
-        elif "W8A16" in module_name or hasattr(module, "int8_weights"):
-            return 8, "W8A16"
-        elif "W16A16" in module_name:
-            return 16, "W16A16"
+        if "W4A16LinearLayer" in module_name:
+            return 4, "W4A16LinearLayer"
+        elif "W8A16LinearLayer" in module_name:
+            return 8, "W8A16LinearLayer"
+        elif "W16A16LinearLayer" in module_name:
+            return 16, "W16A16LinearLayer"
 
         return None, None
 
