@@ -17,6 +17,8 @@ def run_analysis_for_models(
     config_strategy="aggressive",
     use_iterative=False,
     max_perplexity_increase=0.1,
+    layers_per_iteration=3,
+    max_iterations=50,
 ):
     """
     Run sensitivity analysis for a list of models and save results.
@@ -40,6 +42,8 @@ def run_analysis_for_models(
                 config_strategy=config_strategy,
                 use_iterative=use_iterative,
                 max_perplexity_increase=max_perplexity_increase,
+                layers_per_iteration=layers_per_iteration,
+                max_iterations=max_iterations,
             )
 
             # Create results dictionary

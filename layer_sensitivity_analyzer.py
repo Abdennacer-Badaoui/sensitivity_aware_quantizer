@@ -399,29 +399,34 @@ class LayerSensitivityAnalyzer:
         print(f"INT8: {bit_counts[8]} layers ({bit_counts[8]/total_layers*100:.1f}%)")
         print(f"INT4: {bit_counts[4]} layers ({bit_counts[4]/total_layers*100:.1f}%)")
 
-        # Calculate average bits and compression ratio
-        # total_bits = sum(bits for bits in config.values())
-        # avg_bits = total_bits / total_layers
-        # compression_ratio = 32 / avg_bits
-        # print(f"Average bits per layer: {avg_bits:.2f}")
-        # print(f"Theoretical compression ratio: {compression_ratio:.2f}x")
-
         return config
 
     def get_iterative_config(
-        self, max_perplexity_increase: float = 0.1, initial_strategy: str = "aggressive"
+        self, 
+        max_perplexity_increase: float = 0.1, 
+        initial_strategy: str = "aggressive",
+        layers_per_iteration: int = 3,
+        max_iterations: int = 50
     ):
         """
-        Iteratively adjust quantization config based on perplexity feedback.
-        Start aggressive and progressively increase precision for most sensitive layers.
+        Iteratively adjust quantization config with progressive bit-level upgrades.
+        
+        Strategy:
+        1. Start with initial configuration (e.g., aggressive)
+        2. For each bit level (4→8→16→32), upgrade ALL layers at that level before moving to next
+        3. Upgrade 'layers_per_iteration' layers at a time before evaluating
+        4. Continue until perplexity constraint is met or max iterations reached
 
         Args:
             max_perplexity_increase: Maximum allowed perplexity increase (relative)
             initial_strategy: Starting quantization strategy
+            layers_per_iteration: Number of layers to upgrade per iteration
+            max_iterations: Maximum total iterations allowed across all levels
         """
-        print(
-            f"Starting iterative configuration with max perplexity increase: {max_perplexity_increase}"
-        )
+        print(f"Starting progressive iterative configuration:")
+        print(f"  - Max perplexity increase: {max_perplexity_increase}")
+        print(f"  - Layers per iteration: {layers_per_iteration}")
+        print(f"  - Max total iterations: {max_iterations}")
 
         # Get baseline perplexity
         baseline_ppl = evaluate_model(
@@ -433,68 +438,130 @@ class LayerSensitivityAnalyzer:
         )
         print(f"Baseline perplexity: {baseline_ppl:.4f}")
 
-        # Start with aggressive configuration
+        # Start with initial configuration
         current_config = self.get_sensitivity_based_config(initial_strategy)
-
+        
         # Sort layers by sensitivity (descending) for upgrade priority
         sorted_layers = sorted(
             self.sensitivity_scores.items(), key=lambda x: x[1], reverse=True
         )
-
-        upgrade_order = [4, 8, 16, 32]  # Priority order for upgrades
-
-        iteration = 0
-        while iteration < 100:  # Max iterations to prevent infinite loop
-            iteration += 1
-            print(f"\nIteration {iteration}:")
-
-            # Test current configuration
-            quantized_model = self.apply_mixed_precision(current_config)
-            current_ppl = evaluate_model(
-                quantized_model,
-                self.tokenizer,
-                self.eval_data,
-                self.eval_num_samples,
-                self.device,
-            )
-
-            perplexity_increase = (current_ppl - baseline_ppl) / baseline_ppl
-            print(
-                f"Current perplexity: {current_ppl:.4f} (increase: {perplexity_increase:.3f})"
-            )
-
-            if perplexity_increase <= max_perplexity_increase:
-                print("Perplexity constraint satisfied!")
+        
+        # Define bit upgrade levels
+        upgrade_levels = [(4, 8), (8, 16), (16, 32)]
+        
+        total_iteration = 0
+        
+        for from_bits, to_bits in upgrade_levels:
+            print(f"\n{'='*50}")
+            print(f"UPGRADING LAYERS FROM {from_bits} TO {to_bits} BITS")
+            print(f"{'='*50}")
+            
+            # Get layers at current bit level, sorted by sensitivity (most sensitive first)
+            layers_at_current_level = [
+                (layer_name, sensitivity) for layer_name, sensitivity in sorted_layers
+                if current_config[layer_name] == from_bits
+            ]
+            
+            if not layers_at_current_level:
+                print(f"No layers at {from_bits} bits. Skipping this level.")
+                continue
+                
+            print(f"Found {len(layers_at_current_level)} layers at {from_bits} bits")
+            
+            layers_upgraded_this_level = 0
+            
+            # Continue upgrading layers at this level until all are upgraded or constraints are met
+            while layers_at_current_level and total_iteration < max_iterations:
+                total_iteration += 1
+                
+                # Check current perplexity
+                quantized_model = self.apply_mixed_precision(current_config)
+                current_ppl = evaluate_model(
+                    quantized_model,
+                    self.tokenizer,
+                    self.eval_data,
+                    self.eval_num_samples,
+                    self.device,
+                )
+                
+                perplexity_increase = (current_ppl - baseline_ppl) / baseline_ppl
+                print(f"\nLevel {from_bits}→{to_bits}, Iteration {total_iteration}:")
+                print(f"  Current perplexity: {current_ppl:.4f} (increase: {perplexity_increase:.3f})")
+                
+                # Check if constraint is satisfied
+                if perplexity_increase <= max_perplexity_increase:
+                    print(f"  ✓ Perplexity constraint satisfied!")
+                    del quantized_model
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    return current_config
+                
+                # Get next batch of layers to upgrade (up to layers_per_iteration)
+                layers_to_upgrade = layers_at_current_level[:layers_per_iteration]
+                
+                # Upgrade the selected layers
+                print(f"  Upgrading {len(layers_to_upgrade)} layers:")
+                for layer_name, sensitivity in layers_to_upgrade:
+                    current_config[layer_name] = to_bits
+                    layers_upgraded_this_level += 1
+                    print(f"    - {layer_name} (sensitivity: {sensitivity:.4f})")
+                
+                # Remove upgraded layers from the current level list
+                layers_at_current_level = layers_at_current_level[layers_per_iteration:]
+                
+                del quantized_model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            print(f"\nCompleted {from_bits}→{to_bits} bit level:")
+            print(f"  - Layers upgraded: {layers_upgraded_this_level}")
+            print(f"  - Remaining layers at {from_bits} bits: {len(layers_at_current_level)}")
+            
+            # Check if we've reached max iterations
+            if total_iteration >= max_iterations:
+                print(f"  - Reached maximum iterations ({max_iterations})")
                 break
-
-            # Find layers to upgrade (increase precision)
-            upgraded = False
-            for layer_name, sensitivity in sorted_layers:
-                current_bits = current_config[layer_name]
-
-                # Find next higher precision level
-                next_bits = None
-                for bits in upgrade_order:
-                    if bits > current_bits:
-                        next_bits = bits
-                        break
-
-                if next_bits is not None:
-                    print(
-                        f"Upgrading {layer_name} from {current_bits} to {next_bits} bits"
-                    )
-                    current_config[layer_name] = next_bits
-                    upgraded = True
-                    break
-
-            if not upgraded:
-                print("No more layers to upgrade. Stopping.")
-                break
-
-            del quantized_model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
+            
+            # Print current distribution
+            bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
+            for bits in current_config.values():
+                bit_counts[bits] += 1
+            
+            total_layers = len(current_config)
+            print(f"  - Current distribution:")
+            print(f"    FP32: {bit_counts[32]} ({bit_counts[32]/total_layers*100:.1f}%)")
+            print(f"    BF16: {bit_counts[16]} ({bit_counts[16]/total_layers*100:.1f}%)")
+            print(f"    INT8: {bit_counts[8]} ({bit_counts[8]/total_layers*100:.1f}%)")
+            print(f"    INT4: {bit_counts[4]} ({bit_counts[4]/total_layers*100:.1f}%)")
+        
+        # Final evaluation
+        print(f"\n{'='*50}")
+        print("FINAL EVALUATION")
+        print(f"{'='*50}")
+        
+        quantized_model = self.apply_mixed_precision(current_config)
+        final_ppl = evaluate_model(
+            quantized_model,
+            self.tokenizer,
+            self.eval_data,
+            self.eval_num_samples,
+            self.device,
+        )
+        
+        final_perplexity_increase = (final_ppl - baseline_ppl) / baseline_ppl
+        print(f"Final perplexity: {final_ppl:.4f} (increase: {final_perplexity_increase:.3f})")
+        print(f"Total iterations used: {total_iteration}")
+        
+        if final_perplexity_increase <= max_perplexity_increase:
+            print("✓ Final configuration meets perplexity constraint!")
+        else:
+            print("⚠ Final configuration exceeds perplexity constraint.")
+            print("  Consider using a less aggressive initial strategy or higher constraint.")
+        
+        del quantized_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         return current_config
 
     def apply_mixed_precision(self, config: Dict[str, int]):
@@ -542,6 +609,8 @@ class LayerSensitivityAnalyzer:
         config_strategy,
         use_iterative,
         max_perplexity_increase,
+        layers_per_iteration,
+        max_iterations,
     ):
         """
         Run full analysis with the new sensitivity-based configuration approach.
@@ -551,6 +620,8 @@ class LayerSensitivityAnalyzer:
             config_strategy: Strategy for bit allocation based on sensitivity
             use_iterative: Whether to use iterative refinement based on perplexity
             max_perplexity_increase: Max allowed perplexity increase (for iterative mode)
+            layers_per_iteration: Number of layers to upgrade per iteration (for iterative mode)
+            max_iterations_per_level: Max iterations per bit level (for iterative mode)
         """
         print("=" * 60)
         print("RUNNING FULL MIXED PRECISION ANALYSIS")
@@ -566,6 +637,8 @@ class LayerSensitivityAnalyzer:
             mp_config = self.get_iterative_config(
                 max_perplexity_increase=max_perplexity_increase,
                 initial_strategy=config_strategy,
+                layers_per_iteration=layers_per_iteration,
+                max_iterations=max_iterations,
             )
         else:
             mp_config = self.get_sensitivity_based_config(config_strategy)
@@ -590,10 +663,6 @@ class LayerSensitivityAnalyzer:
             self.device,
         )
         quantized_size = get_model_size_mb(quantized_model)
-
-        # Calculate average bits for reporting
-        # total_bits = sum(bits for bits in mp_config.values())
-        # avg_bits = total_bits / len(mp_config)
 
         results = run_full_analysis_report(
             sensitivity_scores,

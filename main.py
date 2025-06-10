@@ -84,6 +84,20 @@ def parse_args():
         help="Maximum allowed increase in perplexity during quantization",
     )
 
+    parser.add_argument(
+        "--layers_per_iteration",
+        type=int,
+        default=3,
+        help="Number of layers to process per iteration",
+    )
+
+    parser.add_argument(
+        "--max_iterations",
+        type=int,
+        default=50,
+        help="Maximum number of iterations for processing",
+    )
+
     # Processing parameters
     parser.add_argument(
         "--batch_size", type=int, default=32, help="Batch size for processing"
@@ -123,6 +137,8 @@ def main():
         config_strategy=args.config_strategy,
         use_iterative=args.use_iterative,
         max_perplexity_increase=args.max_ppl_increase,
+        layers_per_iteration=args.layers_per_iteration,
+        max_iterations=args.max_iterations,
     )
 
     if all_results:
