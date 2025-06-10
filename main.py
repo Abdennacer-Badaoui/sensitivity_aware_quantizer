@@ -80,7 +80,7 @@ def parse_args():
     parser.add_argument(
         "--max_ppl_increase",
         type=float,
-        default=0.05,
+        default=0.01,
         help="Maximum allowed increase in perplexity during quantization",
     )
 
@@ -94,7 +94,7 @@ def parse_args():
     parser.add_argument(
         "--max_iterations",
         type=int,
-        default=50,
+        default=100,
         help="Maximum number of iterations for processing",
     )
 
