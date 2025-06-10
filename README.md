@@ -16,7 +16,7 @@ The tool provides various command-line options to customize the quantization pro
 
 ### Basic Usage
 
-Run with default settings (uses facebook/opt-125m model with divergence-based method):
+Run with default settings (analyzes multiple default models: facebook/opt-125m, EleutherAI/gpt-neo-125M, TinyLlama/TinyLlama-1.1B-Chat-v1.0):
 
 ```bash
 python main.py
@@ -24,7 +24,7 @@ python main.py
 
 ### Multiple Models Analysis
 
-Analyze multiple models with custom sensitivity method and configuration strategy:
+Analyze specific models with custom sensitivity method and configuration strategy:
 
 ```bash
 python main.py \
@@ -41,8 +41,8 @@ Use a different dataset and adjust sample sizes:
 python main.py \
     --dataset wikitext \
     --dataset_config wikitext-2-raw-v1 \
-    --calibration_samples 200 \
-    --eval_samples 200
+    --calibration_samples 100 \
+    --eval_samples 100
 ```
 
 ### Advanced Configuration Example
@@ -54,25 +54,28 @@ python main.py \
     --models facebook/opt-125m \
     --sensitivity_method divergence \
     --config_strategy int4_only \
-    --use_iterative True \
-    --max_ppl_increase 0.1 \
-    --batch_size 32 \
-    --device cuda
+    --use_iterative \
+    --max_ppl_increase 0.01 \
+    --layers_per_iteration 3 \
+    --max_iterations 100 \
+    --batch_size 32
 ```
 
 ## Command Line Arguments
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--models` | List of model names to analyze | `["facebook/opt-125m"]` |
+| `--models` | List of model names to analyze | `["facebook/opt-125m", "EleutherAI/gpt-neo-125M", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"]` |
 | `--dataset` | Dataset name for calibration and evaluation | `"wikitext"` |
 | `--dataset_config` | Dataset configuration | `"wikitext-2-raw-v1"` |
 | `--calibration_samples` | Number of samples for calibration | `100` |
 | `--eval_samples` | Number of samples for evaluation | `100` |
 | `--sensitivity_method` | Method for sensitivity analysis (`divergence`, `hessian`) | `"divergence"` |
-| `--config_strategy` | Configuration strategy for quantization (`adaptive_threshold`, `percentile`, `exponential`, `aggressive`, `conservative`, `int4_only`) | `"int4_only"` |
-| `--use_iterative` | Use iterative quantization method | `True` |
-| `--max_ppl_increase` | Maximum allowed increase in perplexity during quantization | `0.1` |
+| `--config_strategy` | Configuration strategy for quantization (`adaptive_threshold`, `percentile`, `exponential`, `aggressive`, `conservative`, `int8_only`, `int4_only`) | `"int4_only"` |
+| `--use_iterative` | Use iterative quantization method | `False` |
+| `--max_ppl_increase` | Maximum allowed increase in perplexity during quantization | `0.01` |
+| `--layers_per_iteration` | Number of layers to process per iteration | `3` |
+| `--max_iterations` | Maximum number of iterations for processing | `100` |
 | `--batch_size` | Batch size for processing | `32` |
 | `--device` | Device to use (`auto`, `cuda`, or `cpu`) | `"auto"` |
 | `--results_dir` | Directory to save results | `"results"` |
