@@ -51,9 +51,9 @@ This sensitivity-aware automatic quantization framework formulates a set of opti
 We begin by traversing the model to identify all `nn.Linear` layers (except `lm_head`). After computing a sensitivity score for each layer (or block), we assign an appropriate quantization strategy. The available options include:
 
 - **Unchanged (`nn.Linear`)**: Keeps the original FP32 weights.
-- **W16A16**: Weight quantization to BF16 (16-bit), activation remains FP16.
-- **W8A16**: Weight quantization to INT8, activation remains FP16.
-- **W4A16**: Weight quantization to INT4 (4-bit), activation remains FP16.
+- **W16A16LinearLayer**: Weight quantization to BF16 (16-bit), activation remains FP16.
+- **W8A16LinearLayer**: Weight quantization to INT8, activation remains FP16.
+- **W4A16LinearLayer**: Weight quantization to INT4 (4-bit), activation remains FP16.
 
 Each selected quantization scheme replaces the standard `nn.Linear` layer with a corresponding custom layer class that supports the chosen precision level. These custom classes handle the quantization and dequantization processes, including weight packing (for W4A16), scale and zero-point computation, and buffer management.
 
@@ -220,17 +220,17 @@ Using 100 samples for both sensitivity estimation and model evaluation (perplexi
   </thead>
   <tbody>
     <tr>
-      <td align="center">Adaptive threshold</td>
+      <td align="center">`adaptive_threshold`</td>
       <td align="center"><img src="https://cdn-uploads.huggingface.co/production/uploads/65baa31607366d903890bcf4/czBk5YFVZ0jhbKKLYdB09.png" width="300"/></td>
       <td align="center"><img src="https://cdn-uploads.huggingface.co/production/uploads/65baa31607366d903890bcf4/XpJ5egRDMX6V7b1v157fY.png" width="300"/></td>
     </tr>
     <tr>
-      <td align="center">Int8 only</td>
+      <td align="center">`int8_only`</td>
       <td align="center"><img src="https://cdn-uploads.huggingface.co/production/uploads/65baa31607366d903890bcf4/KTHRIlOBT9eQ-Q8_8mTKt.png" width="300"/></td>
       <td align="center"><img src="https://cdn-uploads.huggingface.co/production/uploads/65baa31607366d903890bcf4/cqSYoGJLRGqiQM0GKYyvU.png" width="300"/></td>
     </tr>
     <tr>
-      <td align="center">Int4 only</td>
+      <td align="center">`int4_only`</td>
       <td align="center"><img src="https://cdn-uploads.huggingface.co/production/uploads/65baa31607366d903890bcf4/l13uZrXnDvqgJDcW7CzQQ.png" width="300"/></td>
       <td align="center"><img src="https://cdn-uploads.huggingface.co/production/uploads/65baa31607366d903890bcf4/CMWpFbj5vNvrdvIiPl6-7.png" width="300"/></td>
     </tr>
@@ -239,22 +239,25 @@ Using 100 samples for both sensitivity estimation and model evaluation (perplexi
 
 </p>
 
-The adaptive threshold strategy demonstrates a **conservative approach** that prioritizes model quality preservation. This method maintains model performance with minimal perplexity degradation (0.1-2.3% across tested models) while achieving size reductions of approximately 32-37% for smaller models and 62.7% for TinyLlama. This conservative behavior stems from the strategy's reliance on statistical thresholds derived from sensitivity distributions, which assign higher precision to layers that fall above the mean sensitivity score. The absence of differences between refined and unrefined versions indicates that the initial bit allocation already satisfies the perplexity constraint, demonstrating the adaptive threshold's built-in safety margins for quality preservation.
+The `adaptive_threshold` strategy demonstrates a **conservative approach** that prioritizes model quality preservation. This method maintains model performance with minimal perplexity degradation (0.1-2.3% across tested models) while achieving size reductions of approximately 32-37% for smaller models and 62.7% for TinyLlama. This conservative behavior stems from the strategy's reliance on statistical thresholds derived from sensitivity distributions, which assign higher precision to layers that fall above the mean sensitivity score. The absence of differences between refined and unrefined versions indicates that the initial bit allocation already satisfies the perplexity constraint, demonstrating the `adaptive_threshold`'s built-in safety margins for quality preservation.
 
-The mixed-precision approach reveals important insights about layer-wise sensitivity patterns. While uniform INT8 quantization shows competitive results in terms of compression ratios, the **mixed-precision framework provides crucial flexibility** for handling diverse model architectures and varying sensitivity requirements. The adaptive threshold strategy's ability to automatically allocate precision based on empirical sensitivity measurements represents a significant advancement over fixed quantization schemes, particularly for models where layer importance varies substantially. This approach enables targeted precision allocation that can be fine-tuned based on specific performance requirements and computational constraints.
+The mixed-precision approach reveals important insights about layer-wise sensitivity patterns. While uniform INT8 quantization shows competitive results in terms of compression ratios, the **mixed-precision framework provides crucial flexibility** for handling diverse model architectures and varying sensitivity requirements. The `adaptive_threshold` strategy's ability to automatically allocate precision based on empirical sensitivity measurements represents a significant advancement over fixed quantization schemes, particularly for models where layer importance varies substantially. This approach enables targeted precision allocation that can be fine-tuned based on specific performance requirements and computational constraints.
 
-The INT4-only strategy provides compelling evidence of the **iterative refinement mechanism's recovery capabilities**. Initial aggressive quantization to 4-bit precision resulted in performance degradation, with perplexity increases ranging from 17.4% to 416.8% across tested models. The refinement process achieved substantial recovery, transforming the EleutherAI GPT-Neo model from a 416.8% perplexity increase to 3.6% while maintaining significant compression (39.8% model size reduction). This recovery demonstrates the refinement algorithm's ability to systematically identify and upgrade critical layers, validating both the sensitivity estimation method's layer importance ranking and the iterative upgrade strategy's effectiveness in meeting performance constraints while preserving compression benefits.
+The INT4-only strategy provides compelling evidence of the **iterative refinement mechanism's recovery capabilities**. Initial aggressive quantization to 4-bit precision resulted in performance degradation, with perplexity increases ranging from 17.4% to 416.8% across tested models. The refinement process achieved substantial recovery, transforming the EleutherAI GPT-Neo model from a 416.8% perplexity increase to 3.6% while maintaining significant compression (39.8% model size reduction). This recovery demonstrates the refinement algorithm's ability to systematically identify and upgrade critical layers, validating both the sensitivity estimation method's layer importance ranking and the iterative upgrade strategy's effectiveness in meeting performance constraints while preserving compression benefits. We can choose a stricter constraint on the allowed perplexity increase (e.g., 1%) if we are more interested in performance. Here are the obtained results (`int4_only` with refinement):
 
+<p align="center">
+  <img src="https://cdn-uploads.huggingface.co/production/uploads/65baa31607366d903890bcf4/IBCZ4BNcGGbpwu-YuBywo.png" width="600"/>
+    <em>Figure 5: Comparative results (Strategy: int4_only with refinement, Max permitted PPL increase: 1%) </em>
+</p>
 
-(Add the plot with 0.01 max_ppl_increase)
-
+This offers a good trade-off between compression and performance, as it achieves greater size reduction than the `int8_only` model while maintaining almost no performance degradation.
 
 ## Conclusion
 
 In this work, we proposed a sensitivity-aware mixed-precision quantization method that dynamically assigns precision levels to different blocks of a Transformer-based language model. Our approach improves the trade-off between compression and performance by leveraging internal sensitivity signals, achieving competitive results without retraining. Experiments conducted on decoder-only autoregressive models demonstrate the effectiveness of our method, with promising gains in accuracy under tight bit constraints.
 
 ## Next Steps
-So far, we have evaluated our quantization strategy on decoder-only models for causal language modeling. As future work, we plan to extend our method to other architectural families, to assess its generalizability. Additionally, we aim to validate our sensitivity metric by comparing it with alternative measures and conduct a more comprehensive evaluation by benchmarking the quantized models on standard downstream datasets such as MMLU and HellaSwag. This will help confirm the robustness of our approach and its applicability to real-world tasks.
+So far, we have evaluated our quantization strategy on decoder-only models for causal language modeling. As future work, we plan to extend our method to other architectural families and tasks, to assess its generalizability. Additionally, we aim to validate our sensitivity metric by comparing it with alternative measures and conduct a more comprehensive evaluation by benchmarking the quantized models on standard downstream datasets such as MMLU and HellaSwag. This will help confirm the robustness of our approach and its applicability to real-world tasks.
 
 
 

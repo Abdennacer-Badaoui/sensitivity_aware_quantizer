@@ -96,10 +96,6 @@ class LayerSensitivityAnalyzer:
         """Extract all quantizable layer modules from the model."""
         layers = {}
         for name, module in self.model.named_modules():
-            # if ("transformer.h." in name and any(x in name for x in [".c_attn", ".c_proj", ".c_fc"])) or \
-            # "lm_head" in name:
-            # layers[name] = module
-
             # Only include layers that have weights
             if isinstance(module, nn.Linear) and "lm_head" not in name:
                 layers[name] = module
@@ -162,7 +158,7 @@ class LayerSensitivityAnalyzer:
             model_copy = copy.deepcopy(self.model)
             replace_single_linear_with_target(
                 model_copy,
-                W8A16LinearLayer,  # Assuming we want to quantize Linear layers
+                W8A16LinearLayer, 
                 layer_name,
             )
 
