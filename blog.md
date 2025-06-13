@@ -1,4 +1,4 @@
-# Sensitivity Aware Mixed Precision Quantization V1 
+# Sensitivity Aware Mixed Precision Quantization V1  
 
 ## 🗝️ TL;DR
 
@@ -6,11 +6,11 @@
 **Solution:** Smart mixed-precision quantization adapts bit-widths layer by layer—protecting sensitive parts while aggressively compressing the rest.  
 
 **How It Works:**  
-- 🔍 **Sensitivity Scoring** – Measures how much each layer suffers from quantization  
+- 🔍 **Sensitivity Scoring** – Measures how much each layer regress from quantization to lower bits  
 - ⚖️ **Precision Allocation** – Automatically assigns higher bits to fragile layers, lower bits to robust ones  
 - 🔄 **Refinement** – Iteratively adjusts to meet accuracy targets  
 
-**Why It Matters:** Delivers leaner, faster models without sacrificing critical performance.  
+**Why It Matters:** Delivers leaner, faster models without critical performance drop.  
 *(Dive into the methodology for the nitty-gritty! 🧠)*  
 
 ## Table of Contents:
@@ -27,15 +27,15 @@
 
 ## Introduction
 
-Deploying large neural networks like Transformers and diffusion models efficiently remains a major challenge due to their high memory and compute requirements. Quantization helps by reducing precision, but applying it uniformly across all layers often hurts performance.
+Deploying large neural networks like transformer-based or diffusion models efficiently remains a major challenge due to their high memory and compute requirements. Quantization helps sovling the memory bottlenecks by reducing precision, but applying the same lower precision uniformly across all layers often degrades model performance.
 
-In this work, we explore a sensitivity-aware mixed-precision quantization (MPQ) approach that allocates precision levels based on how sensitive each block is to quantization. More fragile blocks are kept at higher precision, while more robust ones are quantized more aggressively. This method adapts to different architectures — from LLMs to diffusion models — and leads to better trade-offs between efficiency and accuracy compared to uniform quantization.
+In this work, we explore a sensitivity-aware mixed-precision quantization (MPQ) approach that assigns precision levels based on how sensitive each block is to quantization. More sensitive blocks are kept at higher precision, while more robust ones are quantized more aggressively. This method is applicable across different architectures — from LLMs to diffusion models — and aims at leading to better trade-offs between efficiency and accuracy compared to uniform quantization.
 
 ## Background and Motivation
 
-Recent advancements in mixed-precision quantization have highlighted the importance of assigning different bit-widths to various components of neural networks based on their sensitivity to quantization. For instance, [**Qua²SeDiMo**](https://arxiv.org/pdf/2412.14628) introduces a graph neural network (GNN) to predict sensitivities in diffusion models, enabling effective mixed-precision quantization. However, this approach requires training a GNN for each model, which can be computationally intensive and limits its practicality for rapid deployment across diverse architectures.
+Recent advancements in mixed-precision quantization highlight the importance of assigning different bit-widths to various components of neural networks based on their sensitivity to quantization. For instance, [**Qua²SeDiMo**](https://arxiv.org/pdf/2412.14628) introduces a graph neural network (GNN) to predict sensitivities in diffusion models, enabling effective mixed-precision quantization. However, this approach requires training a GNN for each model, which can be computationally intensive and limits its practicality for rapid deployment across diverse architectures.
 
-Similarly, [**SensiMix**](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0265621) applies sensitivity-aware mixed-precision quantization to BERT by combining 8-bit index quantization with 1-bit value quantization. While effective, this method is tailored specifically to BERT, making it less adaptable to other architectures. Other approaches, such as those utilizing cluster-based tree-structured Parzen estimators, offer automated bit-width selection but often rely on model-specific characteristics or require substantial computational resources. 
+Similarly, [**SensiMix**](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0265621) applies sensitivity-aware mixed-precision quantization for BERT by combining 8-bit index quantization with 1-bit value quantization. While effective, this method is specifically tailored to BERT, making it less adaptable to other architectures. Other approaches, such as those utilizing cluster-based tree-structured Parzen estimators, automate bit-width selection but often rely on model-specific characteristics or require substantial computational resources. 
 
 These methods underscore a common challenge: the lack of a fast, model-agnostic technique for sensitivity analysis that can be applied across various neural network architectures without extensive training or fine-tuning.
 
@@ -80,7 +80,7 @@ Each selected quantization scheme replaces the standard `nn.Linear` layer with a
 
 As presented in the background section, there are multiple methods for estimating the sensitivity of a layer or block to quantization. However, most of these methods are either computationally expensive or model-specific.
 In this work, our goal is to develop methods that are both effective and computationally efficient for estimating such 
-sensitivities. A simple yet promising idea is divergence-based sensitivity estimation. The core idea is straightforward: to estimate the sensitivity of a given layer or block, we compute the Jensen-Shannon Divergence (JSD) between the outputs of the original model and those of a model where only that specific layer or block is quantized. A high divergence indicates a highly sensitive layer, which corresponds to a high sensitivity score—this layer should then be allocated more bits during the mixed-precision quantization phase.
+sensitivities. A simple yet promising idea is divergence-based sensitivity estimation. The core idea is straightforward: to estimate the sensitivity of a given layer or block, we compute the Jensen-Shannon Divergence (JSD) between the outputs of the original model and those of a model where only that specific layer or block is quantized. A high divergence indicates a highly sensitive layer, which corresponds to a high sensitivity score, this layer should then be allocated more bits during the mixed-precision quantization phase.
 We also incorporate a small boost to the sensitivity scores based on the activation magnitude, to further refine the estimation.
 
 The divergence-based sensitivity score is computed using the Jensen-Shannon Divergence (JSD) between the baseline and quantized output probability distributions. The sensitivity score averaged over all batches \\( B\\) and normalized by \\( \log 2 \\) is:
@@ -161,7 +161,7 @@ Looking at the sensitivity analysis results across three different language mode
 
 The analysis reveals significant architectural differences in sensitivity patterns between models. Facebook OPT exhibits a distinctive pattern with its fully connected layers (fc1 and fc2) showing relatively high sensitivity scores (3.87e-04 and 5.76e-04), which differs markedly from the other models and likely reflects architectural differences in feed-forward network implementation. Conversely, key and query projection layers (k_proj and q_proj) consistently demonstrate lower sensitivity across all models, with scores around 2.7e-05 in GPT-Neo and even lower values of 5.1e-06 and 9.5e-06 in OPT. This robustness to quantization suggests that attention mechanisms can tolerate some noise in key-query similarity computations without substantial performance degradation.
 
-The layer-wise sensitivity distribution reveals non-uniform patterns across model depth, with clear peaks occurring at specific layers rather than gradual transitions. Both GPT-Neo and OPT models show highest sensitivities in early-to-middle layers and at the model's end, while TinyLlama exhibits a more distributed pattern reflecting its different architecture and training methodology. These findings provide clear guidance for mixed-precision quantization strategies: projection layers, particularly c_proj/down_proj components, should receive higher bit allocations to maintain performance, while k_proj and q_proj layers can tolerate more aggressive quantization. The model-specific patterns underscore the importance of per-architecture sensitivity analysis, as optimal quantization strategies may vary significantly between different model families even when they share similar parameter counts and overall structures.
+The layer-wise sensitivity distribution reveals non-uniform patterns across model depth, with clear peaks occurring at specific layers rather than gradual transitions. Both GPT-Neo and OPT models show highest sensitivities in early-to-middle layers and at the model's end, while TinyLlama exhibits a more distributed pattern reflecting its different architecture and training methodology. These findings provide clear guidance for mixed-precision quantization strategies: projection layers, particularly c_proj/down_proj components, should be assigned higher bit to maintain performance, while k_proj and q_proj layers can tolerate more aggressive quantization. The model-specific patterns underscore the importance of per-architecture sensitivity analysis, as optimal quantization strategies may vary significantly between different model families even when they share similar parameter counts and overall structures.
 
 
 ##### 🧭 Next Steps:
