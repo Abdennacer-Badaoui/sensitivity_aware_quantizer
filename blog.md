@@ -6,7 +6,7 @@
 **Solution:** Smart mixed-precision quantization adapts bit-widths layer by layer—protecting sensitive parts while aggressively compressing the rest.  
 
 **How It Works:**  
-- 🔍 **Sensitivity Scoring** – Measures how much each layer regress from quantization to lower bits  
+- 🔍 **Sensitivity Scoring** – Measures per-layer degradation from quantization to lower bits  
 - ⚖️ **Precision Allocation** – Automatically assigns higher bits to fragile layers, lower bits to robust ones  
 - 🔄 **Refinement** – Iteratively adjusts to meet accuracy targets  
 
