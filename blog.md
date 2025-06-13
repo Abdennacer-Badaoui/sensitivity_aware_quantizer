@@ -1,4 +1,4 @@
-# Sensitivity Aware Mixed Precision Quantization V1 
+# Sensitivity Aware Mixed Precision Quantization V1  
 
 ## 🗝️ TL;DR
 
@@ -6,11 +6,11 @@
 **Solution:** Smart mixed-precision quantization adapts bit-widths layer by layer—protecting sensitive parts while aggressively compressing the rest.  
 
 **How It Works:**  
-- 🔍 **Sensitivity Scoring** – Measures how much each layer suffers from quantization  
+- 🔍 **Sensitivity Scoring** – Measures how much each layer regress from quantization to lower bits  
 - ⚖️ **Precision Allocation** – Automatically assigns higher bits to fragile layers, lower bits to robust ones  
 - 🔄 **Refinement** – Iteratively adjusts to meet accuracy targets  
 
-**Why It Matters:** Delivers leaner, faster models without sacrificing critical performance.  
+**Why It Matters:** Delivers leaner, faster models without critical performance drop.  
 *(Dive into the methodology for the nitty-gritty! 🧠)*  
 
 ## Table of Contents:
@@ -27,9 +27,9 @@
 
 ## Introduction
 
-Deploying large neural networks like Transformers and diffusion models efficiently remains a major challenge due to their high memory and compute requirements. Quantization helps by reducing precision, but applying it uniformly across all layers often hurts performance.
+Deploying large neural networks like transformer-based or diffusion models efficiently remains a major challenge due to their high memory and compute requirements. Quantization helps sovling the memory bottleneck by reducing precision, but applying it uniformly across all layers often hurts performance.
 
-In this work, we explore a sensitivity-aware mixed-precision quantization (MPQ) approach that allocates precision levels based on how sensitive each block is to quantization. More fragile blocks are kept at higher precision, while more robust ones are quantized more aggressively. This method adapts to different architectures — from LLMs to diffusion models — and leads to better trade-offs between efficiency and accuracy compared to uniform quantization.
+In this work, we explore a sensitivity-aware mixed-precision quantization (MPQ) approach that allocates precision levels based on how sensitive each block is to quantization. More sensitive blocks are kept at higher precision, while more robust ones are quantized more aggressively. This method adapts to different architectures — from LLMs to diffusion models — and aims at leading to better trade-offs between efficiency and accuracy compared to uniform quantization.
 
 ## Background and Motivation
 
