@@ -100,7 +100,7 @@ def parse_args():
 
     # Processing parameters
     parser.add_argument(
-        "--batch_size", type=int, default=32, help="Batch size for processing"
+        "--batch_size", type=int, default=128, help="Batch size for processing"
     )
     parser.add_argument(
         "--device", type=str, default="auto", help="Device to use (auto, cuda, or cpu)"

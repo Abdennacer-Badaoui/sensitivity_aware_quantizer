@@ -8,13 +8,15 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 from sensitivity_metrics import SensitivityMetrics
 from reporter import run_full_analysis_report
-from model_utils import evaluate_model, get_model_size_mb
+from model_utils import perplexity, get_model_size_mb
+from benchmarker import evaluate_llm_benchmark
 from quantizer import (
     replace_single_linear_with_target,
     W4A16LinearLayer,
     W8A16LinearLayer,
     W16A16LinearLayer,
 )
+import time 
 
 
 class LayerSensitivityAnalyzer:
@@ -26,7 +28,7 @@ class LayerSensitivityAnalyzer:
         eval_data=None,
         calibration_num_samples: int = 100,
         eval_num_samples: int = 100,
-        batch_size: int = 16,
+        batch_size: int = 128,
         dataset_name: str = "wikitext",
         dataset_config: str = "wikitext-2-raw-v1",
     ):
@@ -425,7 +427,7 @@ class LayerSensitivityAnalyzer:
         print(f"  - Max total iterations: {max_iterations}")
 
         # Get baseline perplexity
-        baseline_ppl = evaluate_model(
+        baseline_ppl = perplexity(
             self.model,
             self.tokenizer,
             self.eval_data,
@@ -472,7 +474,7 @@ class LayerSensitivityAnalyzer:
                 
                 # Check current perplexity
                 quantized_model = self.apply_mixed_precision(current_config)
-                current_ppl = evaluate_model(
+                current_ppl = perplexity(
                     quantized_model,
                     self.tokenizer,
                     self.eval_data,
@@ -519,7 +521,7 @@ class LayerSensitivityAnalyzer:
                 break
             
             # Print current distribution
-            bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
+            bit_counts = {32: 0, 0: 0, 8: 0, 4: 0}
             for bits in current_config.values():
                 bit_counts[bits] += 1
             
@@ -536,7 +538,7 @@ class LayerSensitivityAnalyzer:
         print(f"{'='*50}")
         
         quantized_model = self.apply_mixed_precision(current_config)
-        final_ppl = evaluate_model(
+        final_ppl = perplexity(
             quantized_model,
             self.tokenizer,
             self.eval_data,
@@ -601,34 +603,59 @@ class LayerSensitivityAnalyzer:
 
     def run_full_analysis(
         self,
-        sensitivity_method,
-        config_strategy,
-        use_iterative,
-        max_perplexity_increase,
-        layers_per_iteration,
-        max_iterations,
+        sensitivity_method="divergence",
+        config_strategy="aggressive",
+        use_iterative=False,
+        max_perplexity_increase=0.1,
+        layers_per_iteration=3,
+        max_iterations=50,
     ):
-        """
-        Run full analysis with the new sensitivity-based configuration approach.
-
-        Args:
-            sensitivity_method: Method for computing sensitivity scores
-            config_strategy: Strategy for bit allocation based on sensitivity
-            use_iterative: Whether to use iterative refinement based on perplexity
-            max_perplexity_increase: Max allowed perplexity increase (for iterative mode)
-            layers_per_iteration: Number of layers to upgrade per iteration (for iterative mode)
-            max_iterations_per_level: Max iterations per bit level (for iterative mode)
-        """
+        """Run complete sensitivity analysis, mixed precision configuration, and evaluation."""
         print("=" * 60)
         print("RUNNING FULL MIXED PRECISION ANALYSIS")
         print("=" * 60)
 
-        # Analyze layer sensitivity
-        sensitivity_scores = self.analyze_layer_sensitivity(
-            sensitivity_method=sensitivity_method
+        # Get original model metrics
+        print("\nEvaluating original model...")
+        original_ppl = perplexity(
+            self.model,
+            self.tokenizer,
+            self.eval_data,
+            self.eval_num_samples,
+            self.device,
         )
+        original_size = get_model_size_mb(self.model)
+
+        # Run original model benchmarks
+        print("\nRunning original model benchmarks...")
+        original_benchmark_results = {}
+        for benchmark_name in ["glue/mrpc", "glue/sst2"]:
+            try:
+                bench_name = benchmark_name.split("/")[-1]
+                results = evaluate_llm_benchmark(
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    benchmark_name=benchmark_name.split("/")[0],
+                    task_name=bench_name,
+                    num_samples=100,
+                    device=self.device
+                )
+                if results:
+                    original_benchmark_results[bench_name] = results
+            except Exception as e:
+                print(f"Error running benchmark {benchmark_name} on original model: {e}")
+
+        print("hhhhhhhhhhhhhhhhhhhhhhhhhhhh", results)
+
+        # Analyze layer sensitivity
+        print("\nAnalyzing layer sensitivity...")
+        start_time = time.time()
+        sensitivity_scores = self.analyze_layer_sensitivity(sensitivity_method=sensitivity_method)
+        end_time = time.time()
+        print(f"Sensitivity analysis completed in {end_time - start_time:.2f} seconds.")
 
         # Get mixed precision config based on sensitivity
+        print("\nGenerating mixed precision configuration...")
         if use_iterative:
             mp_config = self.get_iterative_config(
                 max_perplexity_increase=max_perplexity_increase,
@@ -639,19 +666,12 @@ class LayerSensitivityAnalyzer:
         else:
             mp_config = self.get_sensitivity_based_config(config_strategy)
 
-        # Evaluate models
-        print("\nEvaluating models...")
-        original_ppl = evaluate_model(
-            self.model,
-            self.tokenizer,
-            self.eval_data,
-            self.eval_num_samples,
-            self.device,
-        )
-        original_size = get_model_size_mb(self.model)
-
+        # Apply quantization
         quantized_model = self.apply_mixed_precision(mp_config)
-        quantized_ppl = evaluate_model(
+
+        # Evaluate quantized model
+        print("\nEvaluating quantized model...")
+        quantized_ppl = perplexity(
             quantized_model,
             self.tokenizer,
             self.eval_data,
@@ -660,6 +680,32 @@ class LayerSensitivityAnalyzer:
         )
         quantized_size = get_model_size_mb(quantized_model)
 
+        # Run quantized model benchmarks
+        print("\nRunning quantized model benchmarks...")
+        quantized_benchmark_results = {}
+        for benchmark_name in ["glue/mrpc", "glue/sst2"]:
+            try:
+                bench_name = benchmark_name.split("/")[-1]
+                results = evaluate_llm_benchmark(
+                    model=quantized_model,
+                    tokenizer=self.tokenizer,
+                    benchmark_name=benchmark_name.split("/")[0],
+                    task_name=bench_name,
+                    num_samples=100,
+                    device=self.device
+                )
+                if results:
+                    quantized_benchmark_results[bench_name] = results
+            except Exception as e:
+                print(f"Error running benchmark {benchmark_name} on quantized model: {e}")
+
+        # Package benchmark results
+        benchmark_results = {
+            "original": original_benchmark_results,
+            "quantized": quantized_benchmark_results
+        }
+
+        # Generate report
         results = run_full_analysis_report(
             sensitivity_scores,
             mp_config,
@@ -667,7 +713,11 @@ class LayerSensitivityAnalyzer:
             quantized_ppl,
             original_size,
             quantized_size,
-            sensitivity_method=sensitivity_method,
+            sensitivity_method,
+            benchmark_results
         )
+
+        # Add quantized model to results for further use
+        results["quantized_model"] = quantized_model
 
         return results
