@@ -22,9 +22,10 @@ def run_analysis_for_models(
     """
     Run sensitivity analysis for a list of models and save results.
     """
+    print(f"\n{'<'*150}\n{' '*50}Mixed Precision Quantization Analysis\n{'>'*150}")
     all_results = {}
     for model_name in models:
-        print(f"\n{'='*30}\nAnalyzing {model_name}\n{'='*30}")
+        print(f"\n{'='*60}\nAnalyzing {model_name}\n{'='*60}")
         try:
             analyzer = LayerSensitivityAnalyzer(
                 model_name=model_name,
@@ -495,7 +496,7 @@ def plot_comparisons(
     plt.savefig(os.path.join(plots_dir, filename), dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"Comprehensive analysis plot saved to {os.path.join(plots_dir, filename)}")
+    print(f"\nComprehensive analysis plot saved to {os.path.join(plots_dir, filename)}")
 
 def save_json(data, filepath):
     """Save data to a JSON file."""

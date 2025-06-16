@@ -37,7 +37,7 @@ class LayerSensitivityAnalyzer:
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() and device != "cpu" else "cpu"
         )
-        print(f"Loading model {model_name}...")
+        print(f"Loading model {model_name}  ...")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -45,7 +45,6 @@ class LayerSensitivityAnalyzer:
             model_name, torch_dtype=torch.float32, device_map=None
         ).to(self.device)
         self.model.eval()
-        self.batch_size = batch_size
         self.calibration_data = calibration_data or self._prepare_hf_dataset(
             split="train",
             num_samples=calibration_num_samples,
@@ -62,6 +61,7 @@ class LayerSensitivityAnalyzer:
         )
         self.calibration_num_samples = calibration_num_samples
         self.eval_num_samples = eval_num_samples
+        self.batch_size = batch_size
         self.sensitivity_scores = {}
 
     def _prepare_hf_dataset(
@@ -149,14 +149,14 @@ class LayerSensitivityAnalyzer:
         self, bits: int = 8, sensitivity_method: str = "divergence"
     ):
         """Analyze the sensitivity of each layer to quantization using the specified method."""
-        print(f"Analyzing layer sensitivity with {bits}-bit quantization...")
+        print(f"Analyzing layer sensitivity with {bits}-bit quantization ...")
         baseline_outputs = self._compute_baseline()
         activation_stats = self._compute_activation_statistics()
         layers = self._get_layer_modules()
         sensitivity_scores = {}
         from tqdm import tqdm
 
-        for layer_name, layer_module in tqdm(layers.items(), desc="Analyzing layers"):
+        for layer_name, layer_module in tqdm(layers.items(), desc="Sensitivity Analysis"):
             model_copy = copy.deepcopy(self.model)
             replace_single_linear_with_target(
                 model_copy,
@@ -564,7 +564,7 @@ class LayerSensitivityAnalyzer:
 
     def apply_mixed_precision(self, config: Dict[str, int]):
         """Apply mixed precision quantization to the model based on the provided configuration."""
-        print("Applying mixed precision quantization...")
+        print("\n Applying mixed precision quantization...")
         quantized_model = copy.deepcopy(self.model)
         for layer_name, bits in config.items():
             # Skip empty layer names
@@ -629,7 +629,7 @@ class LayerSensitivityAnalyzer:
         # Run original model benchmarks
         print("\nRunning original model benchmarks...")
         original_benchmark_results = {}
-        for benchmark_name in ["glue/mrpc", "glue/sst2"]:
+        for benchmark_name in ["glue/mrpc"]:
             try:
                 bench_name = benchmark_name.split("/")[-1]
                 results = evaluate_llm_benchmark(
@@ -646,7 +646,6 @@ class LayerSensitivityAnalyzer:
                 print(f"Error running benchmark {benchmark_name} on original model: {e}")
 
         # Analyze layer sensitivity
-        print("\nAnalyzing layer sensitivity...")
         start_time = time.time()
         sensitivity_scores = self.analyze_layer_sensitivity(sensitivity_method=sensitivity_method)
         end_time = time.time()
@@ -681,7 +680,7 @@ class LayerSensitivityAnalyzer:
         # Run quantized model benchmarks
         print("\nRunning quantized model benchmarks...")
         quantized_benchmark_results = {}
-        for benchmark_name in ["glue/mrpc", "glue/sst2"]:
+        for benchmark_name in ["glue/mrpc"]:
             try:
                 bench_name = benchmark_name.split("/")[-1]
                 results = evaluate_llm_benchmark(
