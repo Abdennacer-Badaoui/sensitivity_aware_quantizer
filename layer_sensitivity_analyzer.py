@@ -521,7 +521,7 @@ class LayerSensitivityAnalyzer:
                 break
             
             # Print current distribution
-            bit_counts = {32: 0, 0: 0, 8: 0, 4: 0}
+            bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
             for bits in current_config.values():
                 bit_counts[bits] += 1
             
@@ -644,8 +644,6 @@ class LayerSensitivityAnalyzer:
                     original_benchmark_results[bench_name] = results
             except Exception as e:
                 print(f"Error running benchmark {benchmark_name} on original model: {e}")
-
-        print("hhhhhhhhhhhhhhhhhhhhhhhhhhhh", results)
 
         # Analyze layer sensitivity
         print("\nAnalyzing layer sensitivity...")
