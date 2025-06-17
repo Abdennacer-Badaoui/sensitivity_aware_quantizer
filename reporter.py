@@ -1,6 +1,4 @@
-import os
-import json
-from typing import Dict
+# Reporting function for sensitivity-aware quantization analysis.
 
 def run_full_analysis_report(
     sensitivity_scores,
@@ -9,7 +7,6 @@ def run_full_analysis_report(
     quantized_ppl,
     original_size,
     quantized_size,
-    sensitivity_method,
     benchmark_results=None,
 ):
     """Run complete analysis including sensitivity analysis, mixed precision configuration, and evaluation."""

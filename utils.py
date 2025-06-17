@@ -18,6 +18,7 @@ def run_analysis_for_models(
     max_perplexity_increase=0.1,
     layers_per_iteration=3,
     max_iterations=50,
+    benchmarking_tasks=None,
 ):
     """
     Run sensitivity analysis for a list of models and save results.
@@ -34,24 +35,28 @@ def run_analysis_for_models(
                 calibration_num_samples=calibration_num_samples,
                 eval_num_samples=eval_num_samples,
                 batch_size=batch_size,
-            )
-
-            # Run analysis
-            results = analyzer.run_full_analysis(
                 sensitivity_method=sensitivity_method,
                 config_strategy=config_strategy,
                 use_iterative=use_iterative,
                 max_perplexity_increase=max_perplexity_increase,
                 layers_per_iteration=layers_per_iteration,
                 max_iterations=max_iterations,
+                benchmarking_tasks=benchmarking_tasks,
             )
+
+            # Run analysis
+            results = analyzer.run_full_analysis()
 
             # Create results dictionary
             model_results = {
                 "model_name": model_name,
                 "sensitivity_method": sensitivity_method,
+                "calibration_num_samples": calibration_num_samples,
+                "eval_num_samples": eval_num_samples,
                 "config_strategy": config_strategy,
                 "use_iterative": use_iterative,
+                "layers_per_iteration": layers_per_iteration,
+                "max_iterations": max_iterations,
                 "max_perplexity_increase": max_perplexity_increase,
                 "original_perplexity": results.get("original_perplexity"),
                 "quantized_perplexity": results.get("quantized_perplexity"),
@@ -82,10 +87,7 @@ def run_analysis_for_models(
 
             traceback.print_exc()
             continue
-
-    # Save all results
-    if all_results:
-        save_json(all_results, os.path.join(results_dir, "all_models_sensitivity.json"))
+        
     return all_results
 
 
@@ -226,7 +228,7 @@ def plot_comparisons(
     
     x = range(len(model_names))
     width = 0.35
-    plot_idx = 1
+    plot_idx = 0
 
     # Extract basic data 
     orig_ppl = []
@@ -457,11 +459,16 @@ def plot_comparisons(
         f"Sensitivity Method: {sensitivity_method} | Config Strategy: {config_strategy} | "
         f"Iterative: {use_iterative} | Max PPL Increase: {max_perplexity_increase}",
         fontsize=16,
-        y=0.98
+        y=0.995  
     )
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.93, right=0.85)  
+    plt.subplots_adjust(
+        top=0.85,  
+        right=0.85,
+        hspace=0.5,  
+        bottom=0.1   
+    )  
     
     # Save plot
     filename = f"comprehensive_analysis_{sensitivity_method}_{config_strategy}_{use_iterative}.png"

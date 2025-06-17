@@ -98,6 +98,16 @@ def parse_args():
         help="Maximum number of iterations for processing",
     )
 
+    # Benchmarking tasks
+    parser.add_argument(
+        "--benchmarking_tasks",
+        nargs="+",
+        default=[
+            "glue/mrpc",
+        ],
+        help="List of tasks for benchmarking the model performance",
+    )
+
     # Processing parameters
     parser.add_argument(
         "--batch_size", type=int, default=128, help="Batch size for processing"
@@ -139,6 +149,7 @@ def main():
         max_perplexity_increase=args.max_ppl_increase,
         layers_per_iteration=args.layers_per_iteration,
         max_iterations=args.max_iterations,
+        benchmarking_tasks=args.benchmarking_tasks,
     )
 
     if all_results:
