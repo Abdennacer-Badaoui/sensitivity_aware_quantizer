@@ -13,7 +13,7 @@ def run_analysis_for_models(
     eval_num_samples=100,
     batch_size=32,
     sensitivity_method="divergence",
-    config_strategy="aggressive",
+    config_strategy="adaptive_threshold",
     use_iterative=False,
     max_perplexity_increase=0.1,
     layers_per_iteration=3,
@@ -60,7 +60,7 @@ def run_analysis_for_models(
                 "sensitivity_scores": results.get("sensitivity_scores"),
                 "mixed_precision_config": results.get("mixed_precision_config"),
                 "bit_distribution": results.get("bit_distribution"),
-                "benchmark_results": results.get("benchmark_results", {}),  # Include benchmark results
+                "benchmark_results": results.get("benchmark_results", {}),  
             }
 
             # Clean up quantized model from results
@@ -106,7 +106,6 @@ def get_benchmark_tasks_and_metrics(all_results):
                             if isinstance(task_results[metric_name], (int, float)):
                                 tasks_metrics[task_name].add(metric_name)
     
-    # Convert sets to lists for easier handling
     return {task: list(metrics) for task, metrics in tasks_metrics.items()}
 
 
@@ -128,7 +127,7 @@ def get_metric_display_info(metric_name):
             'multiplier': 1,
             'format': '.3f',
             'higher_better': True,
-            'range': (-1, 1),  # Special handling for -1 to 1 range
+            'range': (-1, 1),  
             'zero_centered': True
         }
     elif any(acc_metric in metric_name_lower for acc_metric in accuracy_metrics):
@@ -202,10 +201,8 @@ def plot_comparisons(
     os.makedirs(plots_dir, exist_ok=True)
     model_names = list(all_results.keys())
 
-    # Get all benchmark tasks and their metrics
     tasks_metrics = get_benchmark_tasks_and_metrics(all_results)
     
-    # Calculate total number of plots needed
     num_benchmark_plots = sum(len(metrics) for metrics in tasks_metrics.values())
     total_plots = 2 + num_benchmark_plots  # Size + Perplexity + Benchmark plots
     
@@ -229,9 +226,9 @@ def plot_comparisons(
     
     x = range(len(model_names))
     width = 0.35
-    plot_idx = 0
+    plot_idx = 1
 
-    # Extract basic data with error checking
+    # Extract basic data 
     orig_ppl = []
     quant_ppl = []
     orig_size = []
@@ -243,7 +240,7 @@ def plot_comparisons(
         quant_ppl.append(results.get("quantized_perplexity", 0))
         orig_size.append(results.get("original_model_size_mb", 0))
         quant_size.append(results.get("quantized_model_size_mb", 0) or 0)
-
+   
     # Plot 1: Model sizes
     ax = axes[plot_idx]
     ax.bar(
@@ -266,10 +263,8 @@ def plot_comparisons(
     ax.set_xticks(x)
     ax.set_xticklabels(model_names, rotation=45, ha="right")
     
-    # Calculate max y-value for this plot
     max_y = max(max(orig_size), max(quant_size)) * 1.2
     
-    # Add size reduction percentage
     for i, (orig, quant) in enumerate(zip(orig_size, quant_size)):
         if orig > 0 and quant > 0:
             reduction = ((orig - quant) / orig) * 100
@@ -278,10 +273,8 @@ def plot_comparisons(
                 ha="center", va="bottom", fontsize=9, weight='bold'
             )
     
-    # Set ylim after adding text to ensure everything fits
     ax.set_ylim(0, max_y)
     
-    # Place legend outside the plot if there's overlap
     ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0.)
     ax.set_title("Model Size Comparison")
     plot_idx += 1
@@ -308,10 +301,8 @@ def plot_comparisons(
     ax.set_xticks(x)
     ax.set_xticklabels(model_names, rotation=45, ha="right")
     
-    # Calculate max y-value for this plot
     max_y_ppl = max(max(orig_ppl), max(quant_ppl)) * 1.2
     
-    # Add perplexity degradation percentage
     for i, (orig, quant) in enumerate(zip(orig_ppl, quant_ppl)):
         if orig > 0 and quant > 0:
             degradation = (quant / orig - 1) * 100
@@ -325,16 +316,13 @@ def plot_comparisons(
                 weight='bold'
             )
     
-    # Set ylim after adding text to ensure everything fits
     ax.set_ylim(0, max_y_ppl)
     
-    # Place legend outside the plot if there's overlap
     ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0.)
     ax.set_title("Perplexity Comparison")
     plot_idx += 1
 
-    # Plot individual benchmark tasks and metrics
-    # Use consistent colors for all benchmark plots
+    # Plot 3: individual benchmark metrics
     benchmark_colors = {
         'original': 'tab:green',
         'quantized': 'tab:olive'
@@ -347,14 +335,13 @@ def plot_comparisons(
                 
             ax = axes[plot_idx]
             
-            # Extract data for this specific task and metric
             orig_scores = []
             quant_scores = []
             
             for model_name in model_names:
                 results = all_results[model_name]
                 
-                # Get original score
+                # Get original scores
                 orig_score = 0
                 if ("benchmark_results" in results and 
                     "original" in results["benchmark_results"] and
@@ -363,7 +350,7 @@ def plot_comparisons(
                     orig_score = results["benchmark_results"]["original"][task_name][metric_name]
                 orig_scores.append(orig_score)
                 
-                # Get quantized score
+                # Get quantized scores
                 quant_score = 0
                 if ("benchmark_results" in results and 
                     "quantized" in results["benchmark_results"] and
@@ -372,14 +359,11 @@ def plot_comparisons(
                     quant_score = results["benchmark_results"]["quantized"][task_name][metric_name]
                 quant_scores.append(quant_score)
             
-            # Get metric display information
             metric_info = get_metric_display_info(metric_name)
             
-            # Apply multiplier for percentage metrics
             orig_scores_display = [score * metric_info['multiplier'] for score in orig_scores]
             quant_scores_display = [score * metric_info['multiplier'] for score in quant_scores]
             
-            # Plot with consistent colors
             ax.bar(
                 [i - width / 2 for i in x],
                 orig_scores_display,
@@ -401,11 +385,9 @@ def plot_comparisons(
             ax.set_xticks(x)
             ax.set_xticklabels(model_names, rotation=45, ha="right")
             
-            # Create title
             task_display = task_name.replace('_', ' ').title()
             ax.set_title(f"{task_display}: {metric_info['title_suffix']}")
             
-            # Calculate max y-value for this plot
             if metric_info.get('zero_centered', False):
                 max_abs_val = max(abs(min(min(orig_scores_display), min(quant_scores_display))),
                                  abs(max(max(orig_scores_display), max(quant_scores_display))))
@@ -415,18 +397,14 @@ def plot_comparisons(
                 max_y_bench = max(max(orig_scores_display), max(quant_scores_display)) * 1.2
                 min_y_bench = 0
             
-            # Add performance change percentage
             for i, (orig, quant) in enumerate(zip(orig_scores, quant_scores)):
-                if orig != 0 and quant != 0:  # Changed condition to handle negative values
-                    # For correlation metrics, calculate absolute difference instead of percentage
+                if orig != 0 and quant != 0:  
                     if metric_info.get('zero_centered', False):
-                        change = quant - orig  # Absolute difference
+                        change = quant - orig 
                         
-                        # Choose arrow and color based on change direction
                         arrow = "↑" if change >= 0 else "↓"
                         color = "green" if change >= 0 else "red"
                         
-                        # Position text above the highest bar
                         text_y = max(orig_scores_display[i], quant_scores_display[i]) + (max_y_bench - min_y_bench) * 0.05
                         
                         ax.text(
@@ -440,10 +418,8 @@ def plot_comparisons(
                             color=color
                         )
                     else:
-                        # Regular percentage calculation for other metrics
                         change = ((quant / orig - 1) * 100)
                         
-                        # Choose arrow based on whether higher is better
                         if metric_info['higher_better']:
                             arrow = "↑" if change >= 0 else "↓"
                             color = "green" if change >= 0 else "red"
@@ -462,20 +438,16 @@ def plot_comparisons(
                             color=color
                         )
             
-            # Set y-axis limits with special handling for correlation metrics
             if metric_info.get('zero_centered', False):
                 ax.set_ylim(min_y_bench, max_y_bench)
-                # Add horizontal line at y=0 for reference
                 ax.axhline(y=0, color='black', linestyle='--', alpha=0.3, linewidth=0.8)
             else:
                 ax.set_ylim(min_y_bench, max_y_bench)
             
-            # Place legend outside the plot if there's overlap
             ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0.)
             
             plot_idx += 1
 
-    # Hide unused subplots
     for i in range(plot_idx, len(axes)):
         axes[i].set_visible(False)
 
@@ -489,7 +461,7 @@ def plot_comparisons(
     )
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.93, right=0.85)  # Make room for suptitle and legends
+    plt.subplots_adjust(top=0.93, right=0.85)  
     
     # Save plot
     filename = f"comprehensive_analysis_{sensitivity_method}_{config_strategy}_{use_iterative}.png"
