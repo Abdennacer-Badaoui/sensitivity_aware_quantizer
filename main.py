@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument(
         "--config_strategy",
         type=str,
-        default="int4_only",
+        default="adaptive_threshold",
         choices=[
             "adaptive_threshold",
             "percentile",
@@ -110,7 +110,7 @@ def parse_args():
 
     # Processing parameters
     parser.add_argument(
-        "--batch_size", type=int, default=128, help="Batch size for processing"
+        "--batch_size", type=int, default=256, help="Batch size for processing"
     )
     parser.add_argument(
         "--device", type=str, default="auto", help="Device to use (auto, cuda, or cpu)"
@@ -157,6 +157,7 @@ def main():
             args.plots_dir,
             all_results,
             args.sensitivity_method,
+            args.calibration_samples,
             args.config_strategy,
             args.use_iterative,
             args.max_ppl_increase,

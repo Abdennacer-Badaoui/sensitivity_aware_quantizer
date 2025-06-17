@@ -77,7 +77,7 @@ def run_analysis_for_models(
             # Save individual results
             out_path = os.path.join(
                 results_dir,
-                f"{model_name.replace('/', '_')}_{sensitivity_method}_{config_strategy}_{use_iterative}.json",
+                f"{model_name.replace('/', '_')}_{sensitivity_method}_{calibration_num_samples}_{config_strategy}_{use_iterative}.json",
             )
             save_json(model_results, out_path)
 
@@ -188,6 +188,7 @@ def plot_comparisons(
     plots_dir,
     all_results,
     sensitivity_method,
+    calibration_num_samples,
     config_strategy,
     use_iterative,
     max_perplexity_increase,
@@ -456,7 +457,7 @@ def plot_comparisons(
     # Add overall title
     fig.suptitle(
         f"Model Analysis Results\n"
-        f"Sensitivity Method: {sensitivity_method} | Config Strategy: {config_strategy} | "
+        f"Method: {sensitivity_method} with {calibration_num_samples} samples| Config Strategy: {config_strategy} | "
         f"Iterative: {use_iterative} | Max PPL Increase: {max_perplexity_increase}",
         fontsize=16,
         y=0.995  
