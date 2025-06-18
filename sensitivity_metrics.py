@@ -38,87 +38,91 @@ class SensitivityMetrics:
         return sensitivity_score
 
     @staticmethod
-    def compute_hessian_based_sensitivities(
-        model, layer_name, layer_module, calibration_data
-    ):
-        """Compute the trace of the Hessian diagonal for a specific layer using Fisher Information approximation."""
-
-        # Set model to train mode for gradient computation
-        was_training = model.training
-        model.train()
-
-        trace_sum = 0.0
-        num_samples = 0
-
-        # Use a smaller subset for Hessian computation to manage memory
-        max_samples_for_hessian = min(20, len(calibration_data["input_ids"]))
-
+    def compute_hessian_based_sensitivities(model, tokenizer, weight_tensor, input_data, 
+                                            device="cuda", max_iter=20, epsilon=1e-4):
+        """
+        Hessian eigenvalue approximation using finite differences with power iteration.
+        
+        Args:
+            model: The neural network model
+            tokenizer: Tokenizer for preparing labels
+            weight_tensor: Weight tensor of the target layer
+            input_data: Input data for Hessian calculation
+            device: Device to use for computation
+            max_iter: Number of power iterations
+            epsilon: Finite difference step size
+            
+        Returns:
+            float: Approximated top eigenvalue of the Hessian matrix
+        """
+        # Save original model state
+        original_state = model.training
+        model.eval()
+        
+        # Prepare data
+        input_ids = input_data["input_ids"].to(device)
+        attention_mask = input_data["attention_mask"].to(device)
+        labels = input_ids.clone()
+        if tokenizer.pad_token_id is not None:
+            labels[labels == tokenizer.pad_token_id] = -100
+        
+        # Initialize random direction vector
+        v = torch.randn_like(weight_tensor, device=device)
+        v = v / torch.norm(v)  # Normalize to unit vector
+        
+        eigenvalue = None
+        
         try:
-            for i in range(
-                0, max_samples_for_hessian, 1
-            ):  # Process one sample at a time
-                batch_inputs = {
-                    "input_ids": calibration_data["input_ids"][i : i + 1],
-                    "attention_mask": calibration_data["attention_mask"][i : i + 1],
-                }
-
-                # Clear gradients
-                model.zero_grad()
-
-                # Forward pass
-                outputs = model(**batch_inputs)
-                logits = outputs.logits
-
-                # Use log probabilities for numerical stability
-                log_probs = torch.log_softmax(logits, dim=-1)
-
-                # Sample multiple tokens from the distribution for better approximation
-                seq_len = log_probs.size(1)
-                samples_per_seq = min(5, seq_len)  # Sample a few positions per sequence
-
-                for pos_idx in range(0, seq_len, max(1, seq_len // samples_per_seq)):
-                    if pos_idx >= seq_len:
-                        break
-
-                    # Clear gradients for this position
-                    model.zero_grad()
-
-                    # Sample from categorical distribution at this position
-                    probs = torch.softmax(logits[0, pos_idx], dim=0)
-                    sampled_token = torch.multinomial(probs, 1)
-
-                    # Compute log probability of sampled token
-                    log_prob = log_probs[0, pos_idx, sampled_token]
-
-                    # Backward pass to compute gradients
-                    log_prob.backward(retain_graph=True)
-
-                    # Get gradient for this layer
-                    if layer_module.weight.grad is not None:
-                        grad = layer_module.weight.grad.clone()
-                        # Fisher Information approximation: trace of outer product g ⊗ g
-                        trace_contribution = torch.sum(grad * grad).item()
-                        trace_sum += trace_contribution
-                        num_samples += 1
-
-            # Normalize by number of samples
-            hessian_trace = trace_sum / num_samples if num_samples > 0 else 0.0
-
-            # Normalize by parameter count for fair comparison across layers
-            param_count = layer_module.weight.numel()
-            normalized_trace = hessian_trace / param_count if param_count > 0 else 0.0
-
-            # Apply log scaling to compress the range
-            sensitivity_score = math.log(1 + normalized_trace)
-
-        except Exception as e:
-            print(f"Warning: Hessian computation failed for {layer_name}: {str(e)}")
-            sensitivity_score = 1.0  # Default sensitivity
-
-        finally:
-            # Restore original training mode
-            model.train(was_training)
-            # Clear any remaining gradients
+            # Compute original gradient
+            weight_tensor.requires_grad_(True)
             model.zero_grad()
-
-        return sensitivity_score
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            loss = outputs.loss
+            loss.backward()
+            grad_original = weight_tensor.grad.clone().detach()
+            
+            # Power iteration with finite differences
+            for i in range(max_iter):
+                # Perturb parameter in v direction
+                with torch.no_grad():
+                    original_weight = weight_tensor.data.clone()
+                    weight_tensor.data += epsilon * v
+                
+                # Compute gradient at perturbed point
+                model.zero_grad()
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
+                loss.backward()
+                grad_perturbed = weight_tensor.grad.clone().detach()
+                
+                # Restore original parameter
+                with torch.no_grad():
+                    weight_tensor.data.copy_(original_weight)
+                
+                # Approximate Hessian-vector product
+                Hv = (grad_perturbed - grad_original) / epsilon
+                
+                # Update eigenvalue estimate (Rayleigh quotient)
+                new_eigenvalue = torch.sum(v * Hv).item()
+                
+                # Check for convergence
+                if eigenvalue is not None and abs(new_eigenvalue - eigenvalue) < 1e-6:
+                    break
+                    
+                eigenvalue = new_eigenvalue
+                
+                # Update direction vector for next iteration
+                v = Hv / (torch.norm(Hv) + 1e-8)
+            
+            return abs(eigenvalue) if eigenvalue is not None else 0.0
+            
+        except Exception as e:
+            print(f"Error in finite difference approximation: {e}")
+            return 0.0
+        finally:
+            # Restore original state
+            model.train(original_state)
+            weight_tensor.requires_grad_(False)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        

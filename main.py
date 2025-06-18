@@ -103,7 +103,7 @@ def parse_args():
         "--benchmarking_tasks",
         nargs="+",
         default=[
-            "glue/mrpc",
+            #"glue/mrpc",
         ],
         help="List of tasks for benchmarking the model performance",
     )

@@ -228,6 +228,13 @@ class LayerSensitivityAnalyzer:
         activation_stats = self._compute_activation_statistics()
         layers = self._get_layer_modules()
         sensitivity_scores = {}
+
+        # Prepare a single batch for Hessian calculation
+        input_data = {
+        "input_ids": self.calibration_data["input_ids"][:1],
+        "attention_mask": self.calibration_data["attention_mask"][:1]
+        }
+        
         from tqdm import tqdm
 
         for layer_name, layer_module in tqdm(layers.items(), desc="Sensitivity Analysis"):
@@ -246,10 +253,8 @@ class LayerSensitivityAnalyzer:
                     baseline_outputs, quantized_outputs
                 )
             elif self.sensitivity_method == "hessian":
-                sensitivity_scores[
-                    layer_name
-                ] = SensitivityMetrics.compute_hessian_based_sensitivities(
-                    model_copy, layer_name, layer_module, self.calibration_data
+                sensitivity_scores[layer_name] = SensitivityMetrics.compute_hessian_based_sensitivities(
+                    self.model, self.tokenizer, layer_module.weight, input_data,
                 )
 
             # Normalize activation magnitude to [0,1] range
