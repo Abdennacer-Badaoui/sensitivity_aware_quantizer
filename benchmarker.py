@@ -13,7 +13,7 @@ def evaluate_llm_benchmark(
     task_name: str = "mrpc",
     num_samples: int = 100,
     device: str = "cuda",
-    few_shot_examples: int = 0,
+    few_shot_examples: int = 5,
     max_length: int = 512,
     temperature: float = 0.1,
     do_sample: bool = True,
@@ -46,7 +46,9 @@ def evaluate_llm_benchmark(
             dataset = load_dataset("super_glue", task_name, split="validation")
             metric = load("super_glue", task_name)
         elif benchmark_name == "mmlu":
-            dataset = load_dataset("hendrycks_test", task_name, split="test")
+            print(f"Evaluating MMLU task: {task_name}")
+            # Use the correct MMLU dataset format
+            dataset = load_dataset("cais/mmlu", task_name, split="test")
             metric = load("accuracy")
         else:
             print(f"Benchmark {benchmark_name} not supported yet")
@@ -224,7 +226,7 @@ def get_task_config(benchmark_name: str, task_name: str) -> Optional[Dict[str, A
             },
         },
         "mmlu": {
-            # MMLU has many subjects, using a generic template
+            # Generic template for all MMLU subjects
             "default": {
                 "input_keys": ["question", "choices"],
                 "label_key": "answer",
@@ -238,7 +240,8 @@ def get_task_config(benchmark_name: str, task_name: str) -> Optional[Dict[str, A
     if benchmark_name in configs:
         if task_name in configs[benchmark_name]:
             return configs[benchmark_name][task_name]
-        elif "default" in configs[benchmark_name]:
+        elif benchmark_name == "mmlu":
+            # For MMLU, use the default template for any subject
             return configs[benchmark_name]["default"]
 
     return None
@@ -250,7 +253,7 @@ def create_few_shot_prompt(
     """Create few-shot examples for the prompt."""
     few_shot_examples = []
 
-    # Get a few examples from the dataset (use training split if available)
+    # Get a few examples from the dataset (use first few examples)
     examples = dataset.select(range(min(num_examples, len(dataset))))
 
     for example in examples:
@@ -258,6 +261,8 @@ def create_few_shot_prompt(
         label = get_label(example, task_config)
 
         if task_config["task_type"] == "classification" and task_config["labels"]:
+            answer = task_config["labels"][label]
+        elif task_config["task_type"] == "multiple_choice" and task_config["labels"]:
             answer = task_config["labels"][label]
         elif task_config["task_type"] == "regression":
             answer = str(label)
@@ -364,11 +369,21 @@ def extract_prediction(
         elif "no" in response or "false" in response or "not" in response:
             return 0
 
-        # For multiple choice, look for A, B, C, D
-        if task_config["task_type"] == "multiple_choice":
-            for letter in ["a", "b", "c", "d"]:
-                if letter in response:
-                    return ord(letter) - ord("a")
+        # Default to first option if no clear answer
+        return 0
+
+    elif task_config["task_type"] == "multiple_choice":
+        # Look for A, B, C, D in response
+        for i, letter in enumerate(["a", "b", "c", "d"]):
+            if f" {letter}" in f" {response}" or f"{letter}." in response or response.startswith(letter):
+                return i
+
+        # Try to find choice content matches
+        if "choices" in example:
+            choices = example["choices"]
+            for i, choice in enumerate(choices):
+                if choice.lower() in response:
+                    return i
 
         # Default to first option if no clear answer
         return 0
@@ -412,10 +427,6 @@ def get_label(
                 except ValueError:
                     return None
 
-    # Handle MMLU format where answer is 0,1,2,3 for A,B,C,D
-    if "answer" in example:
-        return example["answer"]
-
     return None
 
 
@@ -430,6 +441,7 @@ def run_benchmark_suite(model, tokenizer, device="cuda", num_samples=100):
         ("glue", "qqp"),
         ("super_glue", "boolq"),
         ("super_glue", "copa"),
+        ("mmlu", "formal_logic"),  # Added MMLU example
     ]
 
     results = {}
