@@ -47,7 +47,6 @@ def evaluate_llm_benchmark(
             metric = load("super_glue", task_name)
         elif benchmark_name == "mmlu":
             print(f"Evaluating MMLU task: {task_name}")
-            # Use the correct MMLU dataset format
             dataset = load_dataset("cais/mmlu", task_name, split="test")
             metric = load("accuracy")
         else:
@@ -241,7 +240,6 @@ def get_task_config(benchmark_name: str, task_name: str) -> Optional[Dict[str, A
         if task_name in configs[benchmark_name]:
             return configs[benchmark_name][task_name]
         elif benchmark_name == "mmlu":
-            # For MMLU, use the default template for any subject
             return configs[benchmark_name]["default"]
 
     return None
@@ -253,7 +251,7 @@ def create_few_shot_prompt(
     """Create few-shot examples for the prompt."""
     few_shot_examples = []
 
-    # Get a few examples from the dataset (use first few examples)
+    # Get a few examples from the dataset 
     examples = dataset.select(range(min(num_examples, len(dataset))))
 
     for example in examples:
@@ -441,7 +439,7 @@ def run_benchmark_suite(model, tokenizer, device="cuda", num_samples=100):
         ("glue", "qqp"),
         ("super_glue", "boolq"),
         ("super_glue", "copa"),
-        ("mmlu", "formal_logic"),  # Added MMLU example
+        ("mmlu", "formal_logic"),  
     ]
 
     results = {}
