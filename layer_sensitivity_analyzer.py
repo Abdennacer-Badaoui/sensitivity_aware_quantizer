@@ -2,11 +2,10 @@ import os
 import json
 import time
 from typing import Dict, List
+import copy
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-import copy
-import math
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 from sensitivity_metrics import SensitivityMetrics
