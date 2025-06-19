@@ -1,6 +1,6 @@
 import os
 import json
-import time 
+import time
 from typing import Dict, List
 import torch
 import torch.nn as nn
@@ -25,7 +25,6 @@ class LayerSensitivityAnalyzer:
     def __init__(
         self,
         model_name: str = "microsoft/DialoGPT-small",
-        device: str = "auto",
         calibration_data=None,
         eval_data=None,
         calibration_num_samples: int = 100,
@@ -40,6 +39,7 @@ class LayerSensitivityAnalyzer:
         layers_per_iteration=3,
         max_iterations=50,
         benchmarking_tasks: List[str] = None,
+        device: str = "auto",
     ):
         """Initialize a LayerSensitivityAnalyzer for quantizing transformer models.
 
@@ -48,7 +48,6 @@ class LayerSensitivityAnalyzer:
 
         Args:
             model_name (str): HuggingFace model identifier. Defaults to "microsoft/DialoGPT-small".
-            device (str): Computing device ("cuda", "cpu", or "auto"). Defaults to "auto".
             calibration_data: Pre-prepared calibration dataset. If None, will be created from dataset_name.
             eval_data: Pre-prepared evaluation dataset. If None, will be created from dataset_name.
             calibration_num_samples (int): Number of samples for calibration. Defaults to 100.
@@ -57,14 +56,16 @@ class LayerSensitivityAnalyzer:
             dataset_name (str): HuggingFace dataset name. Defaults to "wikitext".
             dataset_config (str): Dataset configuration. Defaults to "wikitext-2-raw-v1".
             sensitivity_method (str): Method for computing layer sensitivity ("divergence" or "hessian").
-            config_strategy (str): Strategy for quantization configuration 
-                ("adaptive_threshold", "percentile", "exponential", "conservative", "aggressive", 
+            config_strategy (str): Strategy for quantization configuration
+                ("adaptive_threshold", "percentile", "exponential", "conservative", "aggressive",
                 "int8_only", or "int4_only").
             use_iterative (bool): Whether to use iterative refinement. Defaults to True.
             max_perplexity_increase (float): Maximum allowed perplexity degradation. Defaults to 0.1.
             layers_per_iteration (int): Number of layers to upgrade per iteration. Defaults to 3.
             max_iterations (int): Maximum number of refinement iterations. Defaults to 50.
             benchmarking_tasks (List[str]): List of tasks for benchmarking the model performance.
+            device (str): Computing device ("cuda", "cpu", or "auto"). Defaults to "auto".
+
 
         Note:
             The analyzer supports various quantization strategies and can be configured
@@ -106,7 +107,7 @@ class LayerSensitivityAnalyzer:
         self.max_perplexity_increase = max_perplexity_increase
         self.layers_per_iteration = layers_per_iteration
         self.max_iterations = max_iterations
-        self.benchmarking_tasks = benchmarking_tasks 
+        self.benchmarking_tasks = benchmarking_tasks
 
     def _prepare_hf_dataset(
         self,
@@ -229,19 +230,15 @@ class LayerSensitivityAnalyzer:
         layers = self._get_layer_modules()
         sensitivity_scores = {}
 
-        # Prepare a single batch for Hessian calculation
-        input_data = {
-        "input_ids": self.calibration_data["input_ids"][:1],
-        "attention_mask": self.calibration_data["attention_mask"][:1]
-        }
-        
         from tqdm import tqdm
 
-        for layer_name, layer_module in tqdm(layers.items(), desc="Sensitivity Analysis"):
+        for layer_name, layer_module in tqdm(
+            layers.items(), desc="Sensitivity Analysis"
+        ):
             model_copy = copy.deepcopy(self.model)
             replace_single_linear_with_target(
                 model_copy,
-                W8A16LinearLayer, 
+                W8A16LinearLayer,
                 layer_name,
             )
 
@@ -253,8 +250,14 @@ class LayerSensitivityAnalyzer:
                     baseline_outputs, quantized_outputs
                 )
             elif self.sensitivity_method == "hessian":
-                sensitivity_scores[layer_name] = SensitivityMetrics.compute_hessian_based_sensitivities(
-                    self.model, self.tokenizer, layer_module.weight, input_data,
+                sensitivity_scores[
+                    layer_name
+                ] = SensitivityMetrics.compute_hessian_based_sensitivities(
+                    self.model,
+                    self.tokenizer,
+                    layer_module.weight,
+                    self.calibration_data,
+                    self.batch_size,
                 )
 
             # Normalize activation magnitude to [0,1] range
@@ -274,7 +277,7 @@ class LayerSensitivityAnalyzer:
                 torch.cuda.empty_cache()
         self.sensitivity_scores = sensitivity_scores
         return sensitivity_scores
-    
+
     def cached_sensitivity_scores(self, results_dir: str):
         """Load previously computed sensitivity scores from cache.
 
@@ -287,12 +290,18 @@ class LayerSensitivityAnalyzer:
         for file in os.listdir(results_dir):
             with open(os.path.join(results_dir, file), "r") as f:
                 data = json.load(f)
-                if data["model_name"] == self.model_name and data["calibration_num_samples"] == self.calibration_num_samples and data["sensitivity_method"] == self.sensitivity_method:
+                if (
+                    data["model_name"] == self.model_name
+                    and data["calibration_num_samples"] == self.calibration_num_samples
+                    and data["sensitivity_method"] == self.sensitivity_method
+                ):
                     self.sensitivity_scores = data["sensitivity_scores"]
-                    print(f"Loaded cached sensitivity scores from {file} (model_name: {self.model_name}, sensitivity_method: {self.sensitivity_method}, calibration_num_samples: {self.calibration_num_samples})")
+                    print(
+                        f"Loaded cached sensitivity scores from {file} (model_name: {self.model_name}, sensitivity_method: {self.sensitivity_method}, calibration_num_samples: {self.calibration_num_samples})"
+                    )
                     return self.sensitivity_scores
         return None
-                    
+
     def _compute_baseline(self):
         """Compute and cache baseline model outputs.
 
@@ -500,9 +509,7 @@ class LayerSensitivityAnalyzer:
 
         return config
 
-    def get_iterative_config(
-        self
-    ):
+    def get_iterative_config(self):
         """Iteratively refine quantization configuration to meet performance constraints.
 
         Progressively upgrades layer precision based on sensitivity scores while
@@ -528,41 +535,42 @@ class LayerSensitivityAnalyzer:
         print(f"Baseline perplexity: {baseline_ppl:.4f}")
 
         # Start with initial configuration
-        current_config = self.get_sensitivity_based_config(self.config_strategy)
-        
+        current_config = self.get_sensitivity_based_config()
+
         # Sort layers by sensitivity (descending) for upgrade priority
         sorted_layers = sorted(
             self.sensitivity_scores.items(), key=lambda x: x[1], reverse=True
         )
-        
+
         # Define bit upgrade levels
         upgrade_levels = [(4, 8), (8, 16), (16, 32)]
-        
+
         total_iteration = 0
-        
+
         for from_bits, to_bits in upgrade_levels:
             print(f"\n{'='*50}")
             print(f"UPGRADING LAYERS FROM {from_bits} TO {to_bits} BITS")
             print(f"{'='*50}")
-            
+
             # Get layers at current bit level, sorted by sensitivity (most sensitive first)
             layers_at_current_level = [
-                (layer_name, sensitivity) for layer_name, sensitivity in sorted_layers
+                (layer_name, sensitivity)
+                for layer_name, sensitivity in sorted_layers
                 if current_config[layer_name] == from_bits
             ]
-            
+
             if not layers_at_current_level:
                 print(f"No layers at {from_bits} bits. Skipping this level.")
                 continue
-                
+
             print(f"Found {len(layers_at_current_level)} layers at {from_bits} bits")
-            
+
             layers_upgraded_this_level = 0
-            
+
             # Continue upgrading layers at this level until all are upgraded or constraints are met
             while layers_at_current_level and total_iteration < self.max_iterations:
                 total_iteration += 1
-                
+
                 # Check current perplexity
                 quantized_model = self.apply_mixed_precision(current_config)
                 current_ppl = perplexity(
@@ -572,11 +580,13 @@ class LayerSensitivityAnalyzer:
                     self.eval_num_samples,
                     self.device,
                 )
-                
+
                 perplexity_increase = (current_ppl - baseline_ppl) / baseline_ppl
                 print(f"\nLevel {from_bits}→{to_bits}, Iteration {total_iteration}:")
-                print(f"  Current perplexity: {current_ppl:.4f} (increase: {perplexity_increase:.3f})")
-                
+                print(
+                    f"  Current perplexity: {current_ppl:.4f} (increase: {perplexity_increase:.3f})"
+                )
+
                 # Check if constraint is satisfied
                 if perplexity_increase <= self.max_perplexity_increase:
                     print(f"  ✓ Perplexity constraint satisfied!")
@@ -584,50 +594,58 @@ class LayerSensitivityAnalyzer:
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                     return current_config
-                
+
                 # Get next batch of layers to upgrade (up to layers_per_iteration)
-                layers_to_upgrade = layers_at_current_level[:self.layers_per_iteration]
-                
+                layers_to_upgrade = layers_at_current_level[: self.layers_per_iteration]
+
                 # Upgrade the selected layers
                 print(f"  Upgrading {len(layers_to_upgrade)} layers:")
                 for layer_name, sensitivity in layers_to_upgrade:
                     current_config[layer_name] = to_bits
                     layers_upgraded_this_level += 1
                     print(f"    - {layer_name} (sensitivity: {sensitivity:.4f})")
-                
+
                 # Remove upgraded layers from the current level list
-                layers_at_current_level = layers_at_current_level[self.layers_per_iteration:]
-                
+                layers_at_current_level = layers_at_current_level[
+                    self.layers_per_iteration :
+                ]
+
                 del quantized_model
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            
+
             print(f"\nCompleted {from_bits}→{to_bits} bit level:")
             print(f"  - Layers upgraded: {layers_upgraded_this_level}")
-            print(f"  - Remaining layers at {from_bits} bits: {len(layers_at_current_level)}")
-            
+            print(
+                f"  - Remaining layers at {from_bits} bits: {len(layers_at_current_level)}"
+            )
+
             # Check if we've reached max iterations
             if total_iteration >= self.max_iterations:
                 print(f"  - Reached maximum iterations ({self.max_iterations})")
                 break
-            
+
             # Print current distribution
             bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
             for bits in current_config.values():
                 bit_counts[bits] += 1
-            
+
             total_layers = len(current_config)
             print(f"  - Current distribution:")
-            print(f"    FP32: {bit_counts[32]} ({bit_counts[32]/total_layers*100:.1f}%)")
-            print(f"    BF16: {bit_counts[16]} ({bit_counts[16]/total_layers*100:.1f}%)")
+            print(
+                f"    FP32: {bit_counts[32]} ({bit_counts[32]/total_layers*100:.1f}%)"
+            )
+            print(
+                f"    BF16: {bit_counts[16]} ({bit_counts[16]/total_layers*100:.1f}%)"
+            )
             print(f"    INT8: {bit_counts[8]} ({bit_counts[8]/total_layers*100:.1f}%)")
             print(f"    INT4: {bit_counts[4]} ({bit_counts[4]/total_layers*100:.1f}%)")
-        
+
         # Final evaluation
         print(f"\n{'='*50}")
         print("FINAL EVALUATION")
         print(f"{'='*50}")
-        
+
         quantized_model = self.apply_mixed_precision(current_config)
         final_ppl = perplexity(
             quantized_model,
@@ -636,21 +654,25 @@ class LayerSensitivityAnalyzer:
             self.eval_num_samples,
             self.device,
         )
-        
+
         final_perplexity_increase = (final_ppl - baseline_ppl) / baseline_ppl
-        print(f"Final perplexity: {final_ppl:.4f} (increase: {final_perplexity_increase:.3f})")
+        print(
+            f"Final perplexity: {final_ppl:.4f} (increase: {final_perplexity_increase:.3f})"
+        )
         print(f"Total iterations used: {total_iteration}")
-        
+
         if final_perplexity_increase <= self.max_perplexity_increase:
             print("✓ Final configuration meets perplexity constraint!")
         else:
             print("⚠ Final configuration exceeds perplexity constraint.")
-            print("  Consider using a less aggressive initial strategy or higher constraint.")
-        
+            print(
+                "  Consider using a less aggressive initial strategy or higher constraint."
+            )
+
         del quantized_model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        
+
         return current_config
 
     def apply_mixed_precision(self, config: Dict[str, int]):
@@ -740,18 +762,18 @@ class LayerSensitivityAnalyzer:
                     benchmark_name=benchmark_name.split("/")[0],
                     task_name=bench_name,
                     num_samples=100,
-                    device=self.device
+                    device=self.device,
                 )
                 if results:
                     original_benchmark_results[bench_name] = results
             except Exception as e:
-                print(f"Error running benchmark {benchmark_name} on original model: {e}")
+                print(
+                    f"Error running benchmark {benchmark_name} on original model: {e}"
+                )
 
         # Analyze layer sensitivity
         start_time = time.time()
-        sensitivity_scores = self.cached_sensitivity_scores(
-            results_dir="results"
-        )
+        sensitivity_scores = self.cached_sensitivity_scores(results_dir="results")
         if not sensitivity_scores:
             print("No cached sensitivity scores found. Running analysis...")
             sensitivity_scores = self.analyze_layer_sensitivity()
@@ -791,17 +813,19 @@ class LayerSensitivityAnalyzer:
                     benchmark_name=benchmark_name.split("/")[0],
                     task_name=bench_name,
                     num_samples=100,
-                    device=self.device
+                    device=self.device,
                 )
                 if results:
                     quantized_benchmark_results[bench_name] = results
             except Exception as e:
-                print(f"Error running benchmark {benchmark_name} on quantized model: {e}")
+                print(
+                    f"Error running benchmark {benchmark_name} on quantized model: {e}"
+                )
 
         # Package benchmark results
         benchmark_results = {
             "original": original_benchmark_results,
-            "quantized": quantized_benchmark_results
+            "quantized": quantized_benchmark_results,
         }
 
         # Generate report
@@ -812,7 +836,7 @@ class LayerSensitivityAnalyzer:
             quantized_ppl,
             original_size,
             quantized_size,
-            benchmark_results
+            benchmark_results,
         )
 
         # Add quantized model to results for further use

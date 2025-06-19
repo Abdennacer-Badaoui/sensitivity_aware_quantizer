@@ -38,91 +38,141 @@ class SensitivityMetrics:
         return sensitivity_score
 
     @staticmethod
-    def compute_hessian_based_sensitivities(model, tokenizer, weight_tensor, input_data, 
-                                            device="cuda", max_iter=20, epsilon=1e-4):
+    def compute_hessian_based_sensitivities(
+        model,
+        tokenizer,
+        weight_tensor,
+        calibration_data,
+        batch_size,
+        device="cuda",
+        max_iter=20,
+        epsilon=1e-4,
+    ):
         """
         Hessian eigenvalue approximation using finite differences with power iteration.
-        
         Args:
             model: The neural network model
             tokenizer: Tokenizer for preparing labels
             weight_tensor: Weight tensor of the target layer
-            input_data: Input data for Hessian calculation
+            calibration_data: Input data for Hessian calculation
             device: Device to use for computation
             max_iter: Number of power iterations
             epsilon: Finite difference step size
-            
         Returns:
             float: Approximated top eigenvalue of the Hessian matrix
         """
+
         # Save original model state
         original_state = model.training
         model.eval()
-        
-        # Prepare data
-        input_ids = input_data["input_ids"].to(device)
-        attention_mask = input_data["attention_mask"].to(device)
-        labels = input_ids.clone()
-        if tokenizer.pad_token_id is not None:
-            labels[labels == tokenizer.pad_token_id] = -100
-        
-        # Initialize random direction vector
-        v = torch.randn_like(weight_tensor, device=device)
-        v = v / torch.norm(v)  # Normalize to unit vector
-        
-        eigenvalue = None
-        
-        try:
-            # Compute original gradient
+
+        # Helper function to compute Hessian-vector product for a batch
+        def compute_hvp_batch(input_batch, attention_batch, labels_batch, v_direction):
+            # Compute original gradient for this batch
             weight_tensor.requires_grad_(True)
             model.zero_grad()
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            outputs = model(
+                input_ids=input_batch,
+                attention_mask=attention_batch,
+                labels=labels_batch,
+            )
             loss = outputs.loss
             loss.backward()
-            grad_original = weight_tensor.grad.clone().detach()
-            
-            # Power iteration with finite differences
-            for i in range(max_iter):
-                # Perturb parameter in v direction
-                with torch.no_grad():
-                    original_weight = weight_tensor.data.clone()
-                    weight_tensor.data += epsilon * v
-                
-                # Compute gradient at perturbed point
-                model.zero_grad()
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss
-                loss.backward()
-                grad_perturbed = weight_tensor.grad.clone().detach()
-                
-                # Restore original parameter
-                with torch.no_grad():
-                    weight_tensor.data.copy_(original_weight)
-                
-                # Approximate Hessian-vector product
-                Hv = (grad_perturbed - grad_original) / epsilon
-                
-                # Update eigenvalue estimate (Rayleigh quotient)
-                new_eigenvalue = torch.sum(v * Hv).item()
-                
-                # Check for convergence
-                if eigenvalue is not None and abs(new_eigenvalue - eigenvalue) < 1e-6:
-                    break
-                    
-                eigenvalue = new_eigenvalue
-                
-                # Update direction vector for next iteration
-                v = Hv / (torch.norm(Hv) + 1e-8)
-            
-            return abs(eigenvalue) if eigenvalue is not None else 0.0
-            
-        except Exception as e:
-            print(f"Error in finite difference approximation: {e}")
-            return 0.0
-        finally:
-            # Restore original state
-            model.train(original_state)
+            grad_original = (
+                weight_tensor.grad.clone().detach()
+                if weight_tensor.grad is not None
+                else torch.zeros_like(weight_tensor)
+            )
+
+            # Perturb parameter in v direction
+            original_weight = weight_tensor.data.clone()
+            weight_tensor.data += epsilon * v_direction
+
+            # Compute gradient at perturbed point
+            model.zero_grad()
+            outputs = model(
+                input_ids=input_batch,
+                attention_mask=attention_batch,
+                labels=labels_batch,
+            )
+            loss = outputs.loss
+            loss.backward()
+            grad_perturbed = (
+                weight_tensor.grad.clone().detach()
+                if weight_tensor.grad is not None
+                else torch.zeros_like(weight_tensor)
+            )
+
+            # Restore original parameter
+            weight_tensor.data.copy_(original_weight)
             weight_tensor.requires_grad_(False)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        
+
+            # Approximate Hessian-vector product
+            hvp = (grad_perturbed - grad_original) / epsilon
+            return hvp
+
+        # Initialize random direction vector for power iteration
+        v = torch.randn_like(weight_tensor, device=device)
+        v = v / torch.norm(v)  # Normalize to unit vector
+
+        eigenvalue_prev = None
+
+        # Power iteration
+        for iteration in range(max_iter):
+            # Accumulate Hessian-vector product across all batches
+            Hv_accumulated = torch.zeros_like(weight_tensor, device=device)
+            total_samples = 0
+
+            for batch_idx in range(0, len(calibration_data["input_ids"]), batch_size):
+                end_idx = min(
+                    batch_idx + batch_size, len(calibration_data["input_ids"])
+                )
+                batch_size_actual = end_idx - batch_idx
+
+                # Prepare data
+                input_ids = calibration_data["input_ids"][batch_idx:end_idx].to(device)
+                attention_mask = calibration_data["attention_mask"][
+                    batch_idx:end_idx
+                ].to(device)
+                labels = input_ids.clone()
+
+                if tokenizer.pad_token_id is not None:
+                    labels[labels == tokenizer.pad_token_id] = -100
+
+                # Compute Hessian-vector product for this batch
+                hvp_batch = compute_hvp_batch(input_ids, attention_mask, labels, v)
+
+                # Accumulate weighted by batch size
+                Hv_accumulated += hvp_batch * batch_size_actual
+                total_samples += batch_size_actual
+
+            # Average the accumulated Hessian-vector product
+            Hv = Hv_accumulated / total_samples
+
+            # Compute eigenvalue estimate (Rayleigh quotient)
+            eigenvalue = torch.dot(v.flatten(), Hv.flatten()).item()
+
+            # Check for convergence
+            if eigenvalue_prev is not None and abs(eigenvalue - eigenvalue_prev) < 1e-6:
+                print(f"Power iteration converged after {iteration + 1} iterations")
+                break
+
+            eigenvalue_prev = eigenvalue
+
+            # Update direction vector for next iteration (FIXED: proper power iteration)
+            v_norm = torch.norm(Hv)
+            if v_norm > 1e-8:
+                v = Hv / v_norm
+            else:
+                # If Hv is too small, reinitialize randomly
+                v = torch.randn_like(weight_tensor, device=device)
+                v = v / torch.norm(v)
+                print(f"Reinitializing v at iteration {iteration} due to small Hv norm")
+
+        # Clean up
+        model.train(original_state)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return abs(eigenvalue) if eigenvalue_prev is not None else 0.0

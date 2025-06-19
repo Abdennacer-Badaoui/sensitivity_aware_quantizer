@@ -1,13 +1,12 @@
 import os
 import matplotlib.pyplot as plt
 import argparse
-from layer_sensitivity_analyzer import LayerSensitivityAnalyzer
 from utils import run_analysis_for_models, plot_comparisons
 
 MODELS = [
     "facebook/opt-125m",
-    #"EleutherAI/gpt-neo-125M",
-    #"TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    # "EleutherAI/gpt-neo-125M",
+    # "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
 ]
 
 
@@ -103,7 +102,7 @@ def parse_args():
         "--benchmarking_tasks",
         nargs="+",
         default=[
-            #"glue/mrpc",
+            # "glue/mrpc",
         ],
         help="List of tasks for benchmarking the model performance",
     )

@@ -70,9 +70,6 @@ def perplexity(model, tokenizer, eval_data, num_samples, device):
     except Exception as e:
         print(f"Error during evaluation: {e}")
         return float("inf")
-    
-
-
 
 
 def get_model_size_mb(model):
@@ -87,7 +84,7 @@ def get_model_size_mb(model):
         model: PyTorch model with potentially mixed precision layers
 
     Returns:
-        total_size_mb: model size in MB 
+        total_size_mb: model size in MB
     """
 
     def get_dtype_bits(dtype):
@@ -208,4 +205,3 @@ def get_model_size_mb(model):
     total_size_bytes = param_size + buffer_size
     total_size_mb = total_size_bytes / (1024**2)
     return total_size_mb
-
