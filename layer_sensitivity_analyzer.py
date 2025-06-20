@@ -760,7 +760,7 @@ class LayerSensitivityAnalyzer:
                     tokenizer=self.tokenizer,
                     benchmark_name=benchmark_name.split("/")[0],
                     task_name=bench_name,
-                    num_samples=100,
+                    num_samples=200,
                     device=self.device,
                 )
                 if results:
@@ -811,7 +811,7 @@ class LayerSensitivityAnalyzer:
                     tokenizer=self.tokenizer,
                     benchmark_name=benchmark_name.split("/")[0],
                     task_name=bench_name,
-                    num_samples=100,
+                    num_samples=200,
                     device=self.device,
                 )
                 if results:

@@ -11,15 +11,16 @@ def evaluate_llm_benchmark(
     tokenizer,
     benchmark_name: str = "glue",
     task_name: str = "mrpc",
-    num_samples: int = 100,
+    num_samples: int = 1000,
     device: str = "cuda",
     few_shot_examples: int = 5,
     max_length: int = 512,
     temperature: float = 0.1,
     do_sample: bool = True,
+    batch_size: int = 256, 
 ) -> Optional[Dict[str, Any]]:
     """
-    Evaluate LLM performance on various benchmark datasets using prompt-based evaluation.
+    Evaluate LLM performance on various benchmark datasets using prompt-based evaluation with batch processing.
 
     Args:
         model: The language model
@@ -32,6 +33,7 @@ def evaluate_llm_benchmark(
         max_length: Maximum generation length
         temperature: Generation temperature
         do_sample: Whether to use sampling for generation
+        batch_size: Number of examples to process in each batch
 
     Returns:
         Dictionary containing evaluation results
@@ -57,7 +59,7 @@ def evaluate_llm_benchmark(
         if num_samples and num_samples < len(dataset):
             dataset = dataset.select(range(num_samples))
 
-        print(f"Evaluating {len(dataset)} samples from {benchmark_name}/{task_name}")
+        print(f"Evaluating {len(dataset)} samples from {benchmark_name}/{task_name} with batch size {batch_size}")
 
         # Get task configuration
         task_config = get_task_config(benchmark_name, task_name)
@@ -76,32 +78,50 @@ def evaluate_llm_benchmark(
         all_predictions = []
         all_labels = []
 
-        for i, example in enumerate(dataset):
-            # Create prompt for this example
-            prompt = create_prompt(example, task_config, few_shot_prompt)
-
-            # Generate response
-            response = generate_response(
+        # Process in batches
+        for batch_start in range(0, len(dataset), batch_size):
+            batch_end = min(batch_start + batch_size, len(dataset))
+            batch_examples = dataset.select(range(batch_start, batch_end))
+            
+            print(f"Processing batch {batch_start//batch_size + 1}/{(len(dataset) + batch_size - 1)//batch_size}")
+            
+            # Create prompts for the entire batch
+            batch_prompts = []
+            batch_labels = []
+            
+            for example in batch_examples:
+                prompt = create_prompt(example, task_config, few_shot_prompt)
+                label = get_label(example, task_config)
+                
+                if label is not None:
+                    batch_prompts.append(prompt)
+                    batch_labels.append(label)
+            
+            if not batch_prompts:
+                continue
+                
+            # Generate responses for the batch
+            batch_responses = generate_batch_responses(
                 model,
                 tokenizer,
-                prompt,
+                batch_prompts,
                 device,
                 max_length=max_length,
                 temperature=temperature,
                 do_sample=do_sample,
             )
-
-            # Extract prediction from response
-            prediction = extract_prediction(response, task_config, example)
-
-            # Get ground truth label
-            label = get_label(example, task_config)
-
-            if prediction is not None and label is not None:
-                all_predictions.append(prediction)
-                all_labels.append(label)
-            else:
-                print(f"Skipping example {i}: prediction={prediction}, label={label}")
+            
+            # Extract predictions from batch responses
+            for i, response in enumerate(batch_responses):
+                if i < len(batch_examples):
+                    example = batch_examples[i]
+                    prediction = extract_prediction(response, task_config, example)
+                    
+                    if prediction is not None and i < len(batch_labels):
+                        all_predictions.append(prediction)
+                        all_labels.append(batch_labels[i])
+                    else:
+                        print(f"Skipping example in batch: prediction={prediction}")
 
         print(f"Successfully processed {len(all_predictions)}/{len(dataset)} examples")
 
@@ -120,9 +140,78 @@ def evaluate_llm_benchmark(
     except Exception as e:
         print(f"Error during benchmark evaluation: {e}")
         import traceback
-
         traceback.print_exc()
         return None
+
+def generate_batch_responses(
+    model,
+    tokenizer,
+    prompts: List[str],
+    device: str,
+    max_length: int = 512,
+    temperature: float = 0.1,
+    do_sample: bool = False,
+) -> List[str]:
+    """Generate responses from the model for a batch of prompts."""
+    
+    if not prompts:
+        return []
+    
+    # Tokenize all prompts in the batch
+    # We need to handle padding for batch processing
+    inputs = tokenizer(
+        prompts, 
+        return_tensors="pt", 
+        truncation=True, 
+        max_length=max_length // 2,
+        padding=True,  # Enable padding for batch processing
+        pad_to_multiple_of=8,  # Optional: pad to multiple of 8 for efficiency
+    )
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    
+    responses = []
+    
+    # Generate responses
+    with torch.no_grad():
+        if hasattr(model, "generate"):
+            # For models with generate method
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=50,
+                temperature=temperature,
+                do_sample=do_sample,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+            # Decode each generated sequence
+            for i in range(outputs.shape[0]):
+                # Get the generated part (excluding input tokens)
+                input_length = inputs["input_ids"][i].shape[0]
+                generated_tokens = outputs[i][input_length:]
+                response = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                responses.append(response.strip())
+                
+        else:
+            # For models without generate method, use forward pass
+            # This is more complex for batch processing
+            outputs = model(**inputs)
+            
+            for i in range(outputs.logits.shape[0]):
+                # Get last non-padded token logits for each sequence
+                attention_mask = inputs.get("attention_mask", None)
+                if attention_mask is not None:
+                    # Find the last non-padded position
+                    last_pos = attention_mask[i].sum().item() - 1
+                    logits = outputs.logits[i, last_pos, :]
+                else:
+                    logits = outputs.logits[i, -1, :]
+                
+                predicted_token_id = torch.argmax(logits).item()
+                response = tokenizer.decode([predicted_token_id], skip_special_tokens=True)
+                responses.append(response.strip())
+
+    return responses
 
 
 def get_task_config(benchmark_name: str, task_name: str) -> Optional[Dict[str, Any]]:
@@ -296,49 +385,6 @@ def create_prompt(
     return few_shot_prompt + formatted_prompt
 
 
-def generate_response(
-    model,
-    tokenizer,
-    prompt: str,
-    device: str,
-    max_length: int = 512,
-    temperature: float = 0.1,
-    do_sample: bool = False,
-) -> str:
-    """Generate response from the model."""
-
-    # Tokenize input
-    inputs = tokenizer(
-        prompt, return_tensors="pt", truncation=True, max_length=max_length // 2
-    )
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-
-    # Generate
-    with torch.no_grad():
-        if hasattr(model, "generate"):
-            # For models with generate method
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=50,
-                temperature=temperature,
-                do_sample=do_sample,
-                pad_token_id=tokenizer.eos_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-
-            # Decode only the generated part
-            generated_tokens = outputs[0][inputs["input_ids"].shape[1] :]
-            response = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-        else:
-            # For models without generate method, use forward pass
-            outputs = model(**inputs)
-            logits = outputs.logits[0, -1, :]  # Get last token logits
-            predicted_token_id = torch.argmax(logits).item()
-            response = tokenizer.decode([predicted_token_id], skip_special_tokens=True)
-
-    return response.strip()
-
-
 def extract_prediction(
     response: str, task_config: Dict[str, Any], example: Dict[str, Any]
 ) -> Optional[Union[int, float]]:
@@ -428,9 +474,9 @@ def get_label(
     return None
 
 
-# Example usage function
-def run_benchmark_suite(model, tokenizer, device="cuda", num_samples=100):
-    """Run a suite of benchmark evaluations."""
+# Example usage function with batch processing
+def run_benchmark_suite(model, tokenizer, device="cuda", num_samples=100, batch_size=8):
+    """Run a suite of benchmark evaluations with batch processing."""
 
     benchmarks = [
         ("glue", "mrpc"),
@@ -457,6 +503,7 @@ def run_benchmark_suite(model, tokenizer, device="cuda", num_samples=100):
             num_samples=num_samples,
             device=device,
             few_shot_examples=2,  # Use 2-shot prompting
+            batch_size=batch_size,  # Use batch processing
         )
 
         if result:
