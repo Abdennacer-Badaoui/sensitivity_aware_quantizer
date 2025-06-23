@@ -62,26 +62,19 @@ def run_full_analysis_report(
 
         if "original" in benchmark_results and "quantized" in benchmark_results:
             print("Original Model Benchmarks:")
-            for bench_name, metrics in benchmark_results["original"].items():
-                print(f"  {bench_name}:")
-                for metric_name, value in metrics.items():
-                    print(f"    {metric_name}: {value:.4f}")
+            original_accuracy = benchmark_results["original"].get("mean_accuracy", 'N/A')
+            print(f" MMLU accuracy : {original_accuracy:.4f}")
 
             print("\nQuantized Model Benchmarks:")
-            for bench_name, metrics in benchmark_results["quantized"].items():
-                print(f"  {bench_name}:")
-                for metric_name, value in metrics.items():
-                    if (
-                        bench_name in benchmark_results["original"]
-                        and metric_name in benchmark_results["original"][bench_name]
-                    ):
-                        orig_value = benchmark_results["original"][bench_name][
-                            metric_name
-                        ]
-                        rel_change = ((value / orig_value) - 1) * 100
-                        print(f"    {metric_name}: {value:.4f} ({rel_change:+.2f}%)")
-                    else:
-                        print(f"    {metric_name}: {value:.4f}")
+            quantized_accuracy = benchmark_results["quantized"].get("mean_accuracy", 'N/A')
+            rel_change = (
+                (quantized_accuracy / original_accuracy - 1) * 100
+                if original_accuracy != 'N/A' and quantized_accuracy != 'N/A'
+                else 'N/A'
+            )
+            if rel_change != 'N/A':
+                print(f" MMLU accuracy : {quantized_accuracy:.4f} ({rel_change:+.2f}%)")
+            
 
     results = {
         "sensitivity_scores": sensitivity_scores,

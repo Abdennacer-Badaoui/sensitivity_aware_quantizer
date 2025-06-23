@@ -37,7 +37,6 @@ class LayerSensitivityAnalyzer:
         max_perplexity_increase=0.1,
         layers_per_iteration=3,
         max_iterations=50,
-        benchmarking_tasks: List[str] = None,
         device: str = "auto",
     ):
         """Initialize a LayerSensitivityAnalyzer for quantizing transformer models.
@@ -62,7 +61,6 @@ class LayerSensitivityAnalyzer:
             max_perplexity_increase (float): Maximum allowed perplexity degradation. Defaults to 0.1.
             layers_per_iteration (int): Number of layers to upgrade per iteration. Defaults to 3.
             max_iterations (int): Maximum number of refinement iterations. Defaults to 50.
-            benchmarking_tasks (List[str]): List of tasks for benchmarking the model performance.
             device (str): Computing device ("cuda", "cpu", or "auto"). Defaults to "auto".
 
 
@@ -106,7 +104,6 @@ class LayerSensitivityAnalyzer:
         self.max_perplexity_increase = max_perplexity_increase
         self.layers_per_iteration = layers_per_iteration
         self.max_iterations = max_iterations
-        self.benchmarking_tasks = benchmarking_tasks
 
     def _prepare_hf_dataset(
         self,
@@ -752,23 +749,18 @@ class LayerSensitivityAnalyzer:
         # Run original model benchmarks
         print("\nRunning original model benchmarks...")
         original_benchmark_results = {}
-        for benchmark_name in self.benchmarking_tasks:
-            try:
-                bench_name = benchmark_name.split("/")[-1]
-                results = evaluate_llm_benchmark(
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    benchmark_name=benchmark_name.split("/")[0],
-                    task_name=bench_name,
-                    num_samples=200,
-                    device=self.device,
-                )
-                if results:
-                    original_benchmark_results[bench_name] = results
-            except Exception as e:
-                print(
-                    f"Error running benchmark {benchmark_name} on original model: {e}"
-                )
+        try:
+            results = evaluate_llm_benchmark(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                device=self.device,
+            )
+            if results:
+                original_benchmark_results = results
+        except Exception as e:
+            print(
+                f"Error running MMLU benchmark on original model: {e}"
+            )
 
         # Analyze layer sensitivity
         start_time = time.time()
@@ -803,23 +795,18 @@ class LayerSensitivityAnalyzer:
         # Run quantized model benchmarks
         print("\nRunning quantized model benchmarks...")
         quantized_benchmark_results = {}
-        for benchmark_name in self.benchmarking_tasks:
-            try:
-                bench_name = benchmark_name.split("/")[-1]
-                results = evaluate_llm_benchmark(
-                    model=quantized_model,
-                    tokenizer=self.tokenizer,
-                    benchmark_name=benchmark_name.split("/")[0],
-                    task_name=bench_name,
-                    num_samples=200,
-                    device=self.device,
-                )
-                if results:
-                    quantized_benchmark_results[bench_name] = results
-            except Exception as e:
-                print(
-                    f"Error running benchmark {benchmark_name} on quantized model: {e}"
-                )
+        try:
+            results = evaluate_llm_benchmark(
+                model=quantized_model,
+                tokenizer=self.tokenizer,
+                device=self.device,
+            )
+            if results:
+                quantized_benchmark_results = results
+        except Exception as e:
+            print(
+                f"Error running MMLU benchmark on quantized model: {e}"
+            )
 
         # Package benchmark results
         benchmark_results = {
