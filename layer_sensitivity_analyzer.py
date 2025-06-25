@@ -37,6 +37,7 @@ class LayerSensitivityAnalyzer:
         max_perplexity_increase=0.1,
         layers_per_iteration=3,
         max_iterations=50,
+        benchmark: bool = False,
         device: str = "auto",
     ):
         """Initialize a LayerSensitivityAnalyzer for quantizing transformer models.
@@ -61,6 +62,7 @@ class LayerSensitivityAnalyzer:
             max_perplexity_increase (float): Maximum allowed perplexity degradation. Defaults to 0.1.
             layers_per_iteration (int): Number of layers to upgrade per iteration. Defaults to 3.
             max_iterations (int): Maximum number of refinement iterations. Defaults to 50.
+            benchmark (bool): Whether to run benchmark evaluations after quantization. Defaults to False.
             device (str): Computing device ("cuda", "cpu", or "auto"). Defaults to "auto".
 
 
@@ -104,6 +106,7 @@ class LayerSensitivityAnalyzer:
         self.max_perplexity_increase = max_perplexity_increase
         self.layers_per_iteration = layers_per_iteration
         self.max_iterations = max_iterations
+        self.benchmark = benchmark
 
     def _prepare_hf_dataset(
         self,
@@ -226,6 +229,11 @@ class LayerSensitivityAnalyzer:
         layers = self._get_layer_modules()
         sensitivity_scores = {}
 
+        input_data = {
+            "input_ids": self.calibration_data["input_ids"][:1],
+            "attention_mask": self.calibration_data["attention_mask"][:1]
+        }
+
         from tqdm import tqdm
 
         for layer_name, layer_module in tqdm(
@@ -246,14 +254,8 @@ class LayerSensitivityAnalyzer:
                     baseline_outputs, quantized_outputs
                 )
             elif self.sensitivity_method == "hessian":
-                sensitivity_scores[
-                    layer_name
-                ] = SensitivityMetrics.compute_hessian_based_sensitivities(
-                    self.model,
-                    self.tokenizer,
-                    layer_module.weight,
-                    self.calibration_data,
-                    self.batch_size,
+                sensitivity_scores[layer_name] = SensitivityMetrics.compute_hessian_based_sensitivities(
+                    self.model, self.tokenizer, layer_module.weight, input_data,
                 )
 
             # Normalize activation magnitude to [0,1] range
@@ -747,20 +749,21 @@ class LayerSensitivityAnalyzer:
         original_size = get_model_size_mb(self.model)
 
         # Run original model benchmarks
-        print("\nRunning original model benchmarks...")
-        original_benchmark_results = {}
-        try:
-            results = evaluate_llm_benchmark(
-                model=self.model,
-                tokenizer=self.tokenizer,
-                device=self.device,
-            )
-            if results:
-                original_benchmark_results = results
-        except Exception as e:
-            print(
-                f"Error running MMLU benchmark on original model: {e}"
-            )
+        if self.benchmark:
+            print("\nRunning original model benchmarks...")
+            original_benchmark_results = {}
+            try:
+                results = evaluate_llm_benchmark(
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    device=self.device,
+                )
+                if results:
+                    original_benchmark_results = results
+            except Exception as e:
+                print(
+                    f"Error running MMLU benchmark on original model: {e}"
+                )
 
         # Analyze layer sensitivity
         start_time = time.time()
@@ -792,27 +795,28 @@ class LayerSensitivityAnalyzer:
         )
         quantized_size = get_model_size_mb(quantized_model)
 
-        # Run quantized model benchmarks
-        print("\nRunning quantized model benchmarks...")
-        quantized_benchmark_results = {}
-        try:
-            results = evaluate_llm_benchmark(
-                model=quantized_model,
-                tokenizer=self.tokenizer,
-                device=self.device,
-            )
-            if results:
-                quantized_benchmark_results = results
-        except Exception as e:
-            print(
-                f"Error running MMLU benchmark on quantized model: {e}"
-            )
+        if self.benchmark:
+            # Run quantized model benchmarks
+            print("\nRunning quantized model benchmarks...")
+            quantized_benchmark_results = {}
+            try:
+                results = evaluate_llm_benchmark(
+                    model=quantized_model,
+                    tokenizer=self.tokenizer,
+                    device=self.device,
+                )
+                if results:
+                    quantized_benchmark_results = results
+            except Exception as e:
+                print(
+                    f"Error running MMLU benchmark on quantized model: {e}"
+                )
 
-        # Package benchmark results
-        benchmark_results = {
-            "original": original_benchmark_results,
-            "quantized": quantized_benchmark_results,
-        }
+            # Package benchmark results
+            benchmark_results = {
+                "original": original_benchmark_results,
+                "quantized": quantized_benchmark_results,
+            }
 
         # Generate report
         results = run_full_analysis_report(
@@ -822,7 +826,7 @@ class LayerSensitivityAnalyzer:
             quantized_ppl,
             original_size,
             quantized_size,
-            benchmark_results,
+            benchmark_results if self.benchmark else None,
         )
 
         # Add quantized model to results for further use

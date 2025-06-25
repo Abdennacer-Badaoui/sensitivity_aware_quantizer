@@ -97,6 +97,13 @@ def parse_args():
         help="Maximum number of iterations for processing",
     )
 
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        default=False,
+        help="Run benchmark evaluation on the models (default: False). Use --benchmark to enable.",
+    )
+
     # Processing parameters
     parser.add_argument(
         "--batch_size", type=int, default=64, help="Batch size for processing"
@@ -138,6 +145,7 @@ def main():
         max_perplexity_increase=args.max_ppl_increase,
         layers_per_iteration=args.layers_per_iteration,
         max_iterations=args.max_iterations,
+        benchmark=args.benchmark,
     )
 
     if all_results:
@@ -149,6 +157,7 @@ def main():
             args.config_strategy,
             args.use_iterative,
             args.max_ppl_increase,
+            args.benchmark,
         )
         print(
             f"\nAnalysis and visualizations complete. See {args.results_dir} and {args.plots_dir}."
