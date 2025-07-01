@@ -40,6 +40,36 @@ class LayerSensitivityAnalyzer:
         benchmark: bool = False,
         device: str = "auto",
     ):
+        """Initialize a LayerSensitivityAnalyzer for quantizing transformer models.
+
+        This class analyzes the sensitivity of different layers in a transformer model
+        and determines the optimal quantization strategy while maintaining model performance.
+
+        Args:
+            model_name (str): HuggingFace model identifier. Defaults to "microsoft/DialoGPT-small".
+            calibration_data: Pre-prepared calibration dataset. If None, will be created from dataset_name.
+            eval_data: Pre-prepared evaluation dataset. If None, will be created from dataset_name.
+            calibration_num_samples (int): Number of samples for calibration. Defaults to 100.
+            eval_num_samples (int): Number of samples for evaluation. Defaults to 100.
+            batch_size (int): Batch size for processing. Defaults to 128.
+            dataset_name (str): HuggingFace dataset name. Defaults to "wikitext".
+            dataset_config (str): Dataset configuration. Defaults to "wikitext-2-raw-v1".
+            sensitivity_method (str): Method for computing layer sensitivity ("divergence" or "hessian").
+            config_strategy (str): Strategy for quantization configuration
+                ("adaptive_threshold", "percentile", "exponential", "conservative", "aggressive",
+                "int8_only", or "int4_only").
+            use_iterative (bool): Whether to use iterative refinement. Defaults to True.
+            max_perplexity_increase (float): Maximum allowed perplexity degradation. Defaults to 0.1.
+            layers_per_iteration (int): Number of layers to upgrade per iteration. Defaults to 3.
+            max_iterations (int): Maximum number of refinement iterations. Defaults to 50.
+            benchmark (bool): Whether to run benchmark evaluations after quantization. Defaults to False.
+            device (str): Computing device ("cuda", "cpu", or "auto"). Defaults to "auto".
+
+
+        Note:
+            The analyzer supports various quantization strategies and can be configured
+            for different trade-offs between model size and performance.
+        """
         self.model_name = model_name
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() and device != "cpu" else "cpu"
@@ -86,6 +116,18 @@ class LayerSensitivityAnalyzer:
         dataset_config: str,
         split_name: str,
     ):
+        """Prepare and tokenize dataset from HuggingFace datasets.
+
+        Args:
+            split (str): Dataset split ("train", "validation", "test").
+            num_samples (int): Number of samples to prepare.
+            dataset_name (str): HuggingFace dataset name.
+            dataset_config (str): Dataset configuration name.
+            split_name (str): Name for logging purposes.
+
+        Returns:
+            dict: Dictionary containing tokenized input_ids and attention_mask tensors.
+        """
         print(
             f"Preparing {split_name} data from HuggingFace dataset: {dataset_name}/{dataset_config} [{split}] ..."
         )
@@ -108,6 +150,11 @@ class LayerSensitivityAnalyzer:
         }
 
     def _get_layer_modules(self):
+        """Extract all quantizable linear layers from the model.
+
+        Returns:
+            dict: Dictionary mapping layer names to their corresponding nn.Linear modules.
+        """
         layers = {}
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear) and "lm_head" not in name:
@@ -115,6 +162,14 @@ class LayerSensitivityAnalyzer:
         return layers
 
     def _compute_activation_statistics(self):
+        """Compute statistical metrics for layer activations.
+
+        Analyzes layer activations during forward pass to compute mean, standard deviation,
+        and magnitude statistics for each layer.
+
+        Returns:
+            dict: Dictionary containing activation statistics for each layer.
+        """
         print("Computing activation statistics...")
         activations = {}
         hooks = []
@@ -315,6 +370,17 @@ class LayerSensitivityAnalyzer:
         return sensitivity_scores
 
     def _analyze_layer_sensitivity_sequential(self, bits: int = 8):
+        """Analyze each layer's sensitivity to quantization (Sequantial).
+
+        Quantizes each layer individually and measures its impact on model outputs
+        using the specified sensitivity method.
+
+        Args:
+            bits (int): Number of bits for quantization testing. Defaults to 8.
+
+        Returns:
+            dict: Dictionary mapping layer names to their sensitivity scores.
+        """
         print(f"Sequential layer sensitivity analysis with {bits}-bit quantization")
         baseline_outputs = self._compute_baseline()
         activation_stats = self._compute_activation_statistics()
@@ -367,6 +433,14 @@ class LayerSensitivityAnalyzer:
         return sensitivity_scores
 
     def cached_sensitivity_scores(self, results_dir: str):
+        """Load previously computed sensitivity scores from cache.
+
+        Args:
+            results_dir (str): Directory containing cached sensitivity results.
+
+        Returns:
+            dict: Cached sensitivity scores if found, None otherwise.
+        """
         for file in os.listdir(results_dir):
             with open(os.path.join(results_dir, file), "r") as f:
                 data = json.load(f)
@@ -383,6 +457,11 @@ class LayerSensitivityAnalyzer:
         return None
 
     def _compute_baseline(self):
+        """Compute and cache baseline model outputs.
+
+        Returns:
+            list: List of dictionaries containing baseline model outputs (logits and hidden states).
+        """
         if hasattr(self, "_cached_baseline_outputs"):
             return self._cached_baseline_outputs
 
@@ -409,6 +488,14 @@ class LayerSensitivityAnalyzer:
         return baseline_outputs
 
     def _compute_quantized(self, quantized_model):
+        """Compute outputs from a quantized version of the model.
+
+        Args:
+            quantized_model: The quantized model to evaluate.
+
+        Returns:
+            list: List of dictionaries containing quantized model outputs.
+        """
         quantized_outputs = []
         with torch.no_grad():
             for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
@@ -431,6 +518,14 @@ class LayerSensitivityAnalyzer:
         return quantized_outputs
 
     def get_sensitivity_based_config(self):
+        """Generate mixed precision configuration based on sensitivity scores.
+
+        Uses the selected configuration strategy to determine optimal bit-width
+        for each layer based on its sensitivity score.
+
+        Returns:
+            dict: Layer-wise quantization configuration mapping layer names to bit-widths.
+        """
         if not self.sensitivity_scores:
             raise ValueError(
                 "No sensitivity scores available. Run analyze_layer_sensitivity first."
@@ -551,6 +646,15 @@ class LayerSensitivityAnalyzer:
         return config
 
     def get_iterative_config(self):
+        """Iteratively refine quantization configuration to meet performance constraints.
+
+        Progressively upgrades layer precision based on sensitivity scores while
+        monitoring model performance, aiming to find the optimal trade-off between
+        model size and accuracy.
+
+        Returns:
+            dict: Optimized layer-wise quantization configuration.
+        """
         print(f"Starting progressive iterative configuration:")
         print(f"  - Max perplexity increase: {self.max_perplexity_increase}")
         print(f"  - Layers per iteration: {self.layers_per_iteration}")
@@ -685,6 +789,14 @@ class LayerSensitivityAnalyzer:
         return current_config
 
     def apply_mixed_precision(self, config: Dict[str, int]):
+        """Apply mixed precision quantization to the model.
+
+        Args:
+            config (Dict[str, int]): Layer-wise quantization configuration.
+
+        Returns:
+            torch.nn.Module: Quantized model with mixed precision layers.
+        """
         print("\n Applying mixed precision quantization...")
         quantized_model = copy.deepcopy(self.model)
         for layer_name, bits in config.items():
@@ -720,6 +832,19 @@ class LayerSensitivityAnalyzer:
         return quantized_model
 
     def run_full_analysis(self):
+        """Run complete mixed precision quantization analysis pipeline.
+
+        Performs sensitivity analysis, generates quantization configuration,
+        and evaluates the quantized model's performance on various metrics.
+
+        Returns:
+            dict: Comprehensive results including:
+                - Sensitivity scores
+                - Quantization configuration
+                - Performance metrics (perplexity, model size)
+                - Benchmark results
+                - Quantized model
+        """
         print("=" * 60)
         print("RUNNING FULL MIXED PRECISION ANALYSIS")
         print("=" * 60)
