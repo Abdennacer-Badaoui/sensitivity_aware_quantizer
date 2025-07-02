@@ -12,13 +12,14 @@ from datasets import load_dataset
 from sensitivity_metrics import SensitivityMetrics
 from reporter import run_full_analysis_report
 from model_utils import perplexity, get_model_size_mb
-from benchmarker import evaluate_llm_benchmark
 from quantizer import (
-    replace_single_linear_with_target,
     W4A16LinearLayer,
     W8A16LinearLayer,
     W16A16LinearLayer,
+    dequantize_model_to_standard_format,
+    replace_single_linear_with_target,
 )
+
 
 class LayerSensitivityAnalyzer:
     def __init__(
@@ -37,7 +38,6 @@ class LayerSensitivityAnalyzer:
         max_perplexity_increase=0.1,
         layers_per_iteration=3,
         max_iterations=50,
-        benchmark: bool = False,
         device: str = "auto",
     ):
         """Initialize a LayerSensitivityAnalyzer for quantizing transformer models.
@@ -62,7 +62,6 @@ class LayerSensitivityAnalyzer:
             max_perplexity_increase (float): Maximum allowed perplexity degradation. Defaults to 0.1.
             layers_per_iteration (int): Number of layers to upgrade per iteration. Defaults to 3.
             max_iterations (int): Maximum number of refinement iterations. Defaults to 50.
-            benchmark (bool): Whether to run benchmark evaluations after quantization. Defaults to False.
             device (str): Computing device ("cuda", "cpu", or "auto"). Defaults to "auto".
 
 
@@ -106,7 +105,6 @@ class LayerSensitivityAnalyzer:
         self.max_perplexity_increase = max_perplexity_increase
         self.layers_per_iteration = layers_per_iteration
         self.max_iterations = max_iterations
-        self.benchmark = benchmark
 
     def _prepare_hf_dataset(
         self,
@@ -180,6 +178,7 @@ class LayerSensitivityAnalyzer:
                     activations[name] = output.detach()
                 elif isinstance(output, tuple) and len(output) > 0:
                     activations[name] = output[0].detach()
+
             return hook
 
         layers = self._get_layer_modules()
@@ -193,7 +192,9 @@ class LayerSensitivityAnalyzer:
                 )
                 batch_inputs = {
                     "input_ids": self.calibration_data["input_ids"][i:end_idx],
-                    "attention_mask": self.calibration_data["attention_mask"][i:end_idx],
+                    "attention_mask": self.calibration_data["attention_mask"][
+                        i:end_idx
+                    ],
                 }
                 outputs = self.model(**batch_inputs)
         for hook in hooks:
@@ -220,19 +221,17 @@ class LayerSensitivityAnalyzer:
         try:
             device = torch.device(f"cuda:{gpu_id}")
             print(f"Worker on GPU {gpu_id} started with {len(layer_names)} layers")
-            
+
             # Load model on this GPU
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name
-            ).to(device)
+            model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
             model.eval()
-            
+
             # Move calibration data to this GPU
             calib_data = {
                 "input_ids": calibration_data["input_ids"].to(device),
                 "attention_mask": calibration_data["attention_mask"].to(device),
             }
-            
+
             # Compute baseline outputs
             baseline_outputs = []
             with torch.no_grad():
@@ -243,22 +242,25 @@ class LayerSensitivityAnalyzer:
                         "attention_mask": calib_data["attention_mask"][i:end_idx],
                     }
                     outputs = model(**batch_inputs)
-                    baseline_outputs.append({
-                        "logits": outputs.logits.cpu(),
-                        "last_hidden_state": outputs.last_hidden_state.cpu()
-                        if hasattr(outputs, "last_hidden_state")
-                        else None,
-                    })
+                    baseline_outputs.append(
+                        {
+                            "logits": outputs.logits.cpu(),
+                            "last_hidden_state": outputs.last_hidden_state.cpu()
+                            if hasattr(outputs, "last_hidden_state")
+                            else None,
+                        }
+                    )
 
             # Process assigned layers
             layer_scores = {}
             from tqdm import tqdm
+
             for layer_name in tqdm(layer_names, desc="Sensitivity Analysis"):
                 model_copy = copy.deepcopy(model)
                 replace_single_linear_with_target(
                     model_copy, W8A16LinearLayer, layer_name
                 )
-                
+
                 quantized_outputs = []
                 with torch.no_grad():
                     for i in range(0, len(calib_data["input_ids"]), batch_size):
@@ -268,67 +270,80 @@ class LayerSensitivityAnalyzer:
                             "attention_mask": calib_data["attention_mask"][i:end_idx],
                         }
                         outputs = model_copy(**batch_inputs)
-                        quantized_outputs.append({
-                            "logits": outputs.logits.cpu(),
-                            "last_hidden_state": outputs.last_hidden_state.cpu()
-                            if hasattr(outputs, "last_hidden_state")
-                            else None,
-                        })
-                
+                        quantized_outputs.append(
+                            {
+                                "logits": outputs.logits.cpu(),
+                                "last_hidden_state": outputs.last_hidden_state.cpu()
+                                if hasattr(outputs, "last_hidden_state")
+                                else None,
+                            }
+                        )
+
                 # Compute sensitivity
                 score = SensitivityMetrics.compute_divergence_based_sensitivities(
                     baseline_outputs, quantized_outputs
                 )
                 layer_scores[layer_name] = score
-                #print(f"GPU {gpu_id} processed {layer_name}: {score:.4f}")
-                
+                # print(f"GPU {gpu_id} processed {layer_name}: {score:.4f}")
+
                 del model_copy
                 torch.cuda.empty_cache()
 
             output_queue.put(layer_scores)
             print(f"Worker on GPU {gpu_id} completed successfully")
-            
+
+            # Clean up GPU memory
+            del model
+            del calib_data
+            del baseline_outputs
+            torch.cuda.empty_cache()
+
         except Exception as e:
             print(f"Error in worker on GPU {gpu_id}: {str(e)}")
             output_queue.put({})
+            torch.cuda.empty_cache()
 
     def analyze_layer_sensitivity(self, bits: int = 8):
         if bits != 8:
             raise ValueError("Parallel processing only supports 8-bit quantization")
-        
+
         print(f"Parallel layer sensitivity analysis with {bits}-bit quantization")
         baseline_outputs = self._compute_baseline()
         activation_stats = self._compute_activation_statistics()
         layers = list(self._get_layer_modules().keys())
-        
+
         # Get available GPUs (exclude display GPU)
         available_gpus = []
-        for i in range(torch.cuda.device_count()):
+        for i in range(
+            1, torch.cuda.device_count()
+        ):  # excluding 0 for the moment (Should be fixed because we usually get CUDA OOM on device 0)
             total_mem = torch.cuda.get_device_properties(i).total_memory
             if total_mem >= 10 * 1024**3:  # At least 10GB memory
                 available_gpus.append(i)
-        
+
         if not available_gpus:
             print("No suitable GPUs found, falling back to sequential processing")
             return self._analyze_layer_sensitivity_sequential(bits)
-        
+
         print(f"Using GPUs: {available_gpus}")
         num_gpus = len(available_gpus)
         layers_per_gpu = (len(layers) + num_gpus - 1) // num_gpus
-        layer_groups = [layers[i:i+layers_per_gpu] 
-                       for i in range(0, len(layers), layers_per_gpu)]
-        
+        layer_groups = [
+            layers[i : i + layers_per_gpu]
+            for i in range(0, len(layers), layers_per_gpu)
+        ]
+
         # Prepare data for workers
         calibration_data_cpu = {
             "input_ids": self.calibration_data["input_ids"].cpu(),
             "attention_mask": self.calibration_data["attention_mask"].cpu(),
         }
-        
+
         # Setup multiprocessing
-        mp.set_start_method('spawn', force=True)
+        mp.set_start_method("spawn", force=True)
         output_queue = mp.Queue()
         processes = []
-        
+
         # Start worker processes
         for i, gpu_id in enumerate(available_gpus):
             if i < len(layer_groups):
@@ -346,17 +361,21 @@ class LayerSensitivityAnalyzer:
                 )
                 p.start()
                 processes.append(p)
-        
+
         # Collect results
         sensitivity_scores = {}
         for _ in range(len(processes)):
             result = output_queue.get()
             sensitivity_scores.update(result)
-        
+
         # Clean up
         for p in processes:
             p.join()
-        
+
+        # Clean up calibration data in main process
+        del calibration_data_cpu
+        torch.cuda.empty_cache()
+
         # Normalize with activation statistics
         max_magnitude = max(stat["magnitude"] for stat in activation_stats.values())
         for layer_name, score in sensitivity_scores.items():
@@ -365,7 +384,7 @@ class LayerSensitivityAnalyzer:
                     activation_stats[layer_name]["magnitude"] / max_magnitude
                 )
                 sensitivity_scores[layer_name] *= 1.0 + 0.5 * normalized_magnitude
-        
+
         self.sensitivity_scores = sensitivity_scores
         return sensitivity_scores
 
@@ -389,10 +408,11 @@ class LayerSensitivityAnalyzer:
 
         input_data = {
             "input_ids": self.calibration_data["input_ids"][:1],
-            "attention_mask": self.calibration_data["attention_mask"][:1]
+            "attention_mask": self.calibration_data["attention_mask"][:1],
         }
 
         from tqdm import tqdm
+
         for layer_name, layer_module in tqdm(
             layers.items(), desc="Sensitivity Analysis"
         ):
@@ -411,8 +431,13 @@ class LayerSensitivityAnalyzer:
                     baseline_outputs, quantized_outputs
                 )
             elif self.sensitivity_method == "hessian":
-                sensitivity_scores[layer_name] = SensitivityMetrics.compute_hessian_based_sensitivities(
-                    self.model, self.tokenizer, layer_module.weight, input_data,
+                sensitivity_scores[
+                    layer_name
+                ] = SensitivityMetrics.compute_hessian_based_sensitivities(
+                    self.model,
+                    self.tokenizer,
+                    layer_module.weight,
+                    input_data,
                 )
 
             # Normalize activation magnitude
@@ -428,7 +453,7 @@ class LayerSensitivityAnalyzer:
             del model_copy
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                
+
         self.sensitivity_scores = sensitivity_scores
         return sensitivity_scores
 
@@ -473,7 +498,9 @@ class LayerSensitivityAnalyzer:
                 )
                 batch_inputs = {
                     "input_ids": self.calibration_data["input_ids"][i:end_idx],
-                    "attention_mask": self.calibration_data["attention_mask"][i:end_idx],
+                    "attention_mask": self.calibration_data["attention_mask"][
+                        i:end_idx
+                    ],
                 }
                 outputs = self.model(**batch_inputs)
                 baseline_outputs.append(
@@ -504,7 +531,9 @@ class LayerSensitivityAnalyzer:
                 )
                 batch_inputs = {
                     "input_ids": self.calibration_data["input_ids"][i:end_idx],
-                    "attention_mask": self.calibration_data["attention_mask"][i:end_idx],
+                    "attention_mask": self.calibration_data["attention_mask"][
+                        i:end_idx
+                    ],
                 }
                 outputs = quantized_model(**batch_inputs)
                 quantized_outputs.append(
@@ -725,7 +754,9 @@ class LayerSensitivityAnalyzer:
                     layers_upgraded_this_level += 1
                     print(f"    - {layer_name} (sensitivity: {sensitivity:.4f})")
 
-                layers_at_current_level = layers_at_current_level[self.layers_per_iteration :]
+                layers_at_current_level = layers_at_current_level[
+                    self.layers_per_iteration :
+                ]
                 del quantized_model
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -842,7 +873,6 @@ class LayerSensitivityAnalyzer:
                 - Sensitivity scores
                 - Quantization configuration
                 - Performance metrics (perplexity, model size)
-                - Benchmark results
                 - Quantized model
         """
         print("=" * 60)
@@ -858,20 +888,6 @@ class LayerSensitivityAnalyzer:
             self.device,
         )
         original_size = get_model_size_mb(self.model)
-
-        if self.benchmark:
-            print("\nRunning original model benchmarks...")
-            original_benchmark_results = {}
-            try:
-                results = evaluate_llm_benchmark(
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    device=self.device,
-                )
-                if results:
-                    original_benchmark_results = results
-            except Exception as e:
-                print(f"Error running MMLU benchmark on original model: {e}")
 
         start_time = time.time()
         sensitivity_scores = self.cached_sensitivity_scores(results_dir="results")
@@ -899,26 +915,6 @@ class LayerSensitivityAnalyzer:
         )
         quantized_size = get_model_size_mb(quantized_model)
 
-        benchmark_results = None
-        if self.benchmark:
-            print("\nRunning quantized model benchmarks...")
-            quantized_benchmark_results = {}
-            try:
-                results = evaluate_llm_benchmark(
-                    model=quantized_model,
-                    tokenizer=self.tokenizer,
-                    device=self.device,
-                )
-                if results:
-                    quantized_benchmark_results = results
-            except Exception as e:
-                print(f"Error running MMLU benchmark on quantized model: {e}")
-
-            benchmark_results = {
-                "original": original_benchmark_results,
-                "quantized": quantized_benchmark_results,
-            }
-
         results = run_full_analysis_report(
             sensitivity_scores,
             mp_config,
@@ -926,9 +922,15 @@ class LayerSensitivityAnalyzer:
             quantized_ppl,
             original_size,
             quantized_size,
-            benchmark_results,
         )
 
         results["quantized_model"] = quantized_model
+
+        quantized_model_standard_format = dequantize_model_to_standard_format(
+            quantized_model
+        )
+        output_path = f"quantized_models/{self.model_name}_{self.sensitivity_method}_{self.calibration_num_samples}_{self.config_strategy}_{self.use_iterative}"
+        quantized_model_standard_format.save_pretrained(output_path)
+        self.tokenizer.save_pretrained(output_path)
 
         return results
