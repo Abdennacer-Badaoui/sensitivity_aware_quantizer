@@ -9,6 +9,7 @@ import torch.multiprocessing as mp
 from typing import Dict, List
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
+from tqdm import tqdm
 from sensitivity_metrics import SensitivityMetrics
 from reporter import run_full_analysis_report
 from model_utils import perplexity, get_model_size_mb
@@ -195,9 +196,7 @@ class LayerSensitivityAnalyzer:
                 )
                 batch_inputs = {
                     "input_ids": self.profiling_data["input_ids"][i:end_idx],
-                    "attention_mask": self.profiling_data["attention_mask"][
-                        i:end_idx
-                    ],
+                    "attention_mask": self.profiling_data["attention_mask"][i:end_idx],
                 }
                 outputs = self.model(**batch_inputs)
         for hook in hooks:
@@ -265,7 +264,6 @@ class LayerSensitivityAnalyzer:
 
             # Process assigned layers
             layer_scores = {}
-            from tqdm import tqdm
 
             for layer_name in tqdm(layer_names, desc="Sensitivity Analysis"):
                 model_copy = copy.deepcopy(model)
@@ -427,8 +425,6 @@ class LayerSensitivityAnalyzer:
             "attention_mask": self.profiling_data["attention_mask"][:1],
         }
 
-        from tqdm import tqdm
-
         for layer_name, layer_module in tqdm(
             layers.items(), desc="Sensitivity Analysis"
         ):
@@ -515,9 +511,7 @@ class LayerSensitivityAnalyzer:
                 )
                 batch_inputs = {
                     "input_ids": self.profiling_data["input_ids"][i:end_idx],
-                    "attention_mask": self.profiling_data["attention_mask"][
-                        i:end_idx
-                    ],
+                    "attention_mask": self.profiling_data["attention_mask"][i:end_idx],
                 }
                 outputs = self.model(**batch_inputs)
                 baseline_outputs.append(
@@ -552,9 +546,7 @@ class LayerSensitivityAnalyzer:
                 )
                 batch_inputs = {
                     "input_ids": self.profiling_data["input_ids"][i:end_idx],
-                    "attention_mask": self.profiling_data["attention_mask"][
-                        i:end_idx
-                    ],
+                    "attention_mask": self.profiling_data["attention_mask"][i:end_idx],
                 }
                 outputs = quantized_model(**batch_inputs)
                 quantized_outputs.append(
