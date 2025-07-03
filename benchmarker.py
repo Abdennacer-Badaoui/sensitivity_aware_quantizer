@@ -1,183 +1,64 @@
+import os
+import glob
+import json
 import torch
-from datasets import load_dataset
-from evaluate import load
-from typing import Dict, List, Optional, Any
+import matplotlib.pyplot as plt
 
+import lighteval
+from lighteval.logging.evaluation_tracker import EvaluationTracker
+from lighteval.models.vllm.vllm_model import VLLMModelConfig
+from lighteval.pipeline import ParallelismManager, Pipeline, PipelineParameters
+from lighteval.utils.imports import is_accelerate_available
 
-def evaluate_llm_benchmark(
-    model,
-    tokenizer,
-    device: str = "cuda",
-    few_shot_examples: int = 5,
-    max_length: int = 512,
-    temperature: float = 0.1,
-    do_sample: bool = True,
-    batch_size: int = 512, 
-) -> Optional[Dict[str, Any]]:
-    """
-    Evaluate LLM performance on MMLU benchmark by subject.
-    """
-    try:
-        print(f"Evaluating the model on the MMLU benchmark")
-        dataset = load_dataset("cais/mmlu", "all", split="test")
-        metric = load("accuracy")
+if is_accelerate_available():
+    from datetime import timedelta
+    from accelerate import Accelerator, InitProcessGroupKwargs
 
-        subjects = list(set(dataset["subject"]))
-        subject_accuracies = {}
-
-        config = {
-            "input_keys": ["question", "choices"],
-            "label_key": "answer",
-            "labels": ["A", "B", "C", "D"],
-            "task_type": "multiple_choice",
-            "prompt_template": "Question: {question}\nA. {choice_a}\nB. {choice_b}\nC. {choice_c}\nD. {choice_d}\nAnswer:",
-        }
-
-        for subject in subjects:
-            subject_dataset = dataset.filter(lambda x: x["subject"] == subject)
-
-            few_shot_prompt = ""
-            if few_shot_examples > 0:
-                few_shot_prompt = create_few_shot_prompt(
-                    subject_dataset, config, few_shot_examples
-                )
-
-            model.eval()
-            all_predictions = []
-            all_labels = []
-
-            for batch_start in range(0, len(subject_dataset), batch_size):
-                batch_end = min(batch_start + batch_size, len(subject_dataset))
-                batch_examples = subject_dataset.select(range(batch_start, batch_end))
-                                
-                batch_prompts = []
-                batch_labels = []
-                
-                for example in batch_examples:
-                    prompt = create_prompt(example, config, few_shot_prompt)
-                    label = example[config["label_key"]]
-                    
-                    if label is not None:
-                        batch_prompts.append(prompt)
-                        batch_labels.append(label)
-                
-                if not batch_prompts:
-                    continue
-                    
-                batch_responses = generate_batch_responses(
-                    model,
-                    tokenizer,
-                    batch_prompts,
-                    device,
-                    max_length=max_length,
-                    temperature=temperature,
-                    do_sample=do_sample,
-                )
-                
-                for i, response in enumerate(batch_responses):
-                    if i < len(batch_examples):
-                        prediction = extract_prediction(response)
-                        if prediction is not None and i < len(batch_labels):
-                            all_predictions.append(prediction)
-                            all_labels.append(batch_labels[i])
-
-            if len(all_predictions) > 0:
-                subject_accuracy = metric.compute(predictions=all_predictions, references=all_labels)
-                subject_accuracies[subject] = subject_accuracy["accuracy"]
-            else:
-                print(f"No valid predictions for subject: {subject}")
-
-        if not subject_accuracies:
-            print("No valid predictions for any subject")
-            return None
-
-        mean_accuracy = sum(subject_accuracies.values()) / len(subject_accuracies)
-        print(f"\nMean accuracy across all subjects: {mean_accuracy:.4f}")
-
-        return {
-            "mean_accuracy": mean_accuracy,
-            "subject_accuracies": subject_accuracies
-        }
-
-    except Exception as e:
-        print(f"Error during benchmark evaluation: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-
-def generate_batch_responses(
-    model,
-    tokenizer,
-    prompts: List[str],
-    device: str,
-    max_length: int = 512,
-    temperature: float = 0.1,
-    do_sample: bool = False,
-) -> List[str]:
-    """Generate responses from the model for a batch of prompts."""
-    inputs = tokenizer(
-        prompts, 
-        return_tensors="pt", 
-        truncation=True, 
-        max_length=max_length // 2,
-        padding=True,
-        pad_to_multiple_of=8,
+    accelerator = Accelerator(
+        kwargs_handlers=[InitProcessGroupKwargs(timeout=timedelta(seconds=3000))]
     )
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-    
-    responses = []
-    
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=50,
-            temperature=temperature,
-            do_sample=do_sample,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
-
-        for i in range(outputs.shape[0]):
-            input_length = inputs["input_ids"][i].shape[0]
-            generated_tokens = outputs[i][input_length:]
-            response = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-            responses.append(response.strip())
-
-    return responses
+else:
+    accelerator = None
 
 
-def create_few_shot_prompt(dataset, config: Dict[str, Any], num_examples: int) -> str:
-    """Create few-shot examples for the prompt."""
-    few_shot_examples = []
-    examples = dataset.select(range(min(num_examples, len(dataset))))
+def evaluate_llm_benchmark(model_name):
+    evaluation_tracker = EvaluationTracker(
+        output_dir="./benchmark_results",
+        save_details=False,
+    )
 
-    for example in examples:
-        prompt = create_prompt(example, config, "")
-        answer = ["A", "B", "C", "D"][example[config["label_key"]]]
-        few_shot_examples.append(f"{prompt} {answer}")
+    pipeline_params = PipelineParameters(
+        launcher_type=ParallelismManager.ACCELERATE, max_samples=10
+    )
 
-    return "\n\n".join(few_shot_examples) + "\n\n"
+    model_config = VLLMModelConfig(
+        model_name=model_name,
+        dtype="float16",
+        use_chat_template=True,
+    )
+
+    task = "leaderboard|mmlu|5|1"
+
+    pipeline = Pipeline(
+        tasks=task,
+        pipeline_parameters=pipeline_params,
+        evaluation_tracker=evaluation_tracker,
+        model_config=model_config,
+    )
+
+    pipeline.evaluate()
+    pipeline.save_and_push_results()
+    pipeline.show_results()
+
+    del pipeline, model_config, evaluation_tracker, pipeline_params
+    torch.cuda.empty_cache()
 
 
-def create_prompt(example: Dict[str, Any], config: Dict[str, Any], few_shot_prompt: str = "") -> str:
-    """Create prompt for a single example."""
-    prompt_data = {
-        "question": example["question"],
-        "choice_a": example["choices"][0],
-        "choice_b": example["choices"][1],
-        "choice_c": example["choices"][2],
-        "choice_d": example["choices"][3],
-    }
-    return few_shot_prompt + config["prompt_template"].format(**prompt_data)
+if __name__ == "__main__":
+    # Define full precision and quantized model names
+    model1 = "meta-llama/Llama-3.2-3B"
+    model2 = "quantized_models/meta-llama/Llama-3.2-3B_divergence_100_int4_only_True"
 
-
-def extract_prediction(response: str) -> Optional[int]:
-    """Extract prediction from model response."""
-    response = response.lower().strip()
-    
-    for i, letter in enumerate(["a", "b", "c", "d"]):
-        if f" {letter}" in f" {response}" or f"{letter}." in response or response.startswith(letter):
-            return i
-            
-    return 0  # Default to first option if no clear answer
+    # Evaluate each model (comment out if already done)
+    evaluate_llm_benchmark(model1)
+    evaluate_llm_benchmark(model2)

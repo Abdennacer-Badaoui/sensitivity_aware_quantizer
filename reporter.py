@@ -8,7 +8,6 @@ def run_full_analysis_report(
     quantized_ppl,
     original_size,
     quantized_size,
-    benchmark_results=None,
 ):
     """Run complete analysis including sensitivity analysis, mixed precision configuration, and evaluation."""
 
@@ -55,27 +54,6 @@ def run_full_analysis_report(
         print(f"Quantized Model Size:           Failed to compute")
         print(f"Mixed Precision Perplexity:     Failed to compute")
 
-    # Add benchmark results section
-    if benchmark_results:
-        print(f"\nBenchmark Results:")
-        print("-" * 70)
-
-        if "original" in benchmark_results and "quantized" in benchmark_results:
-            print("Original Model Benchmarks:")
-            original_accuracy = benchmark_results["original"].get("mean_accuracy", 'N/A')
-            print(f" MMLU accuracy : {original_accuracy:.4f}")
-
-            print("\nQuantized Model Benchmarks:")
-            quantized_accuracy = benchmark_results["quantized"].get("mean_accuracy", 'N/A')
-            rel_change = (
-                (quantized_accuracy / original_accuracy - 1) * 100
-                if original_accuracy != 'N/A' and quantized_accuracy != 'N/A'
-                else 'N/A'
-            )
-            if rel_change != 'N/A':
-                print(f" MMLU accuracy : {quantized_accuracy:.4f} ({rel_change:+.2f}%)")
-            
-
     results = {
         "sensitivity_scores": sensitivity_scores,
         "mixed_precision_config": mp_config,
@@ -87,8 +65,5 @@ def run_full_analysis_report(
         "quantized_model_size_mb": quantized_size,
         "bit_distribution": bit_counts,
     }
-
-    if benchmark_results:
-        results["benchmark_results"] = benchmark_results
 
     return results

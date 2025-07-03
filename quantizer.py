@@ -251,3 +251,99 @@ def replace_single_linear_with_target(model, target_class, layer_to_replace_name
         new_layer.bias = original_layer.bias
 
     setattr(parent_module, last_name, new_layer)
+
+
+def dequantize_model_to_standard_format(model, target_dtype=torch.float32):
+    """
+    Convert a quantized model back to standard linear layers with dequantized weights (in-place).
+
+    Args:
+        model (nn.Module): The quantized model containing W4A16LinearLayer, W8A16LinearLayer,
+                          or W16A16LinearLayer instances
+        target_dtype (torch.dtype): Target dtype for the dequantized weights (default: torch.float32)
+
+    Returns:
+        nn.Module: The same model instance with quantized layers replaced by standard nn.Linear layers
+    """
+
+    def convert_and_replace(module):
+        """Convert a single quantized layer to standard linear layer and replace it"""
+        if isinstance(module, W4A16LinearLayer):
+            # Dequantize 4-bit weights
+            dequantized_weights = module.dequantize_weights(target_dtype)
+
+            # Create standard linear layer
+            linear_layer = nn.Linear(
+                module.in_features, module.out_features, bias=module.bias is not None
+            )
+
+            # Set dequantized weights
+            linear_layer.weight = nn.Parameter(dequantized_weights)
+
+            # Set bias if exists
+            if module.bias is not None:
+                linear_layer.bias = nn.Parameter(
+                    module.bias.squeeze(0).to(target_dtype)
+                )
+
+            return linear_layer
+
+        elif isinstance(module, W8A16LinearLayer):
+            # Dequantize 8-bit weights
+            dequantized_weights = module.int8_weights.to(
+                target_dtype
+            ) * module.scales.unsqueeze(1).to(target_dtype)
+
+            # Create standard linear layer
+            linear_layer = nn.Linear(
+                module.int8_weights.shape[1],
+                module.int8_weights.shape[0],
+                bias=module.bias is not None,
+            )
+
+            # Set dequantized weights
+            linear_layer.weight = nn.Parameter(dequantized_weights)
+
+            # Set bias if exists
+            if module.bias is not None:
+                linear_layer.bias = nn.Parameter(
+                    module.bias.squeeze(0).to(target_dtype)
+                )
+
+            return linear_layer
+
+        elif isinstance(module, W16A16LinearLayer):
+            # Convert bfloat16 weights to target dtype
+            dequantized_weights = module.bfloat16_weights.to(target_dtype)
+
+            # Create standard linear layer
+            linear_layer = nn.Linear(
+                module.bfloat16_weights.shape[1],
+                module.bfloat16_weights.shape[0],
+                bias=module.bias is not None,
+            )
+
+            # Set weights
+            linear_layer.weight = nn.Parameter(dequantized_weights)
+
+            # Set bias if exists
+            if module.bias is not None:
+                linear_layer.bias = nn.Parameter(
+                    module.bias.squeeze(0).to(target_dtype)
+                )
+
+            return linear_layer
+
+        return None
+
+    # Process the model in-place
+    for name, module in list(model.named_children()):
+        # Check if this module is a quantized layer
+        converted = convert_and_replace(module)
+        if converted is not None:
+            setattr(model, name, converted)
+        else:
+            # Recursively process child modules
+            dequantize_model_to_standard_format(module, target_dtype)
+
+    return model
