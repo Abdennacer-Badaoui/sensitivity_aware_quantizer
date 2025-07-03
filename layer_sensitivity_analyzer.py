@@ -140,7 +140,7 @@ class LayerSensitivityAnalyzer:
         if len(texts) < num_samples:
             print(f"Warning: Only {len(texts)} samples found for {split_name}.")
         encoded = self.tokenizer(
-            texts, padding=True, truncation=True, max_length=256, return_tensors="pt"
+            texts, padding=True, truncation=True, max_length=128, return_tensors="pt"
         )
         return {
             "input_ids": encoded["input_ids"].to(self.device),
@@ -175,9 +175,9 @@ class LayerSensitivityAnalyzer:
         def get_activation_hook(name):
             def hook(module, input, output):
                 if isinstance(output, torch.Tensor):
-                    activations[name] = output.detach()
+                    activations[name] = output.detach().cpu()
                 elif isinstance(output, tuple) and len(output) > 0:
-                    activations[name] = output[0].detach()
+                    activations[name] = output[0].detach().cpu()
 
             return hook
 
@@ -206,12 +206,19 @@ class LayerSensitivityAnalyzer:
                 "std": activation.std().item(),
                 "magnitude": activation.norm().item(),
             }
+
+        # Clear activation data
+        del activations
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return stats
 
     @staticmethod
     def _sensitivity_worker(
         gpu_id: int,
-        model_name: str,
+        model_state_dict: Dict,
+        model_config,
         calibration_data: Dict,
         layer_names: List[str],
         batch_size: int,
@@ -223,7 +230,9 @@ class LayerSensitivityAnalyzer:
             print(f"Worker on GPU {gpu_id} started with {len(layer_names)} layers")
 
             # Load model on this GPU
-            model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+            model = AutoModelForCausalLM.from_config(model_config)
+            model.load_state_dict(model_state_dict)
+            model = model.to(device)
             model.eval()
 
             # Move calibration data to this GPU
@@ -296,6 +305,7 @@ class LayerSensitivityAnalyzer:
             del model
             del calib_data
             del baseline_outputs
+            del quantized_outputs
             torch.cuda.empty_cache()
 
         except Exception as e:
@@ -315,7 +325,7 @@ class LayerSensitivityAnalyzer:
         # Get available GPUs (exclude display GPU)
         available_gpus = []
         for i in range(
-            1, torch.cuda.device_count()
+            0, torch.cuda.device_count()
         ):  # excluding 0 for the moment (Should be fixed because we usually get CUDA OOM on device 0)
             total_mem = torch.cuda.get_device_properties(i).total_memory
             if total_mem >= 10 * 1024**3:  # At least 10GB memory
@@ -344,6 +354,9 @@ class LayerSensitivityAnalyzer:
         output_queue = mp.Queue()
         processes = []
 
+        model_state_dict = {k: v.cpu() for k, v in self.model.state_dict().items()}
+        model_config = self.model.config
+
         # Start worker processes
         for i, gpu_id in enumerate(available_gpus):
             if i < len(layer_groups):
@@ -351,7 +364,8 @@ class LayerSensitivityAnalyzer:
                     target=self._sensitivity_worker,
                     args=(
                         gpu_id,
-                        self.model_name,
+                        model_state_dict,
+                        model_config,
                         calibration_data_cpu,
                         layer_groups[i],
                         self.batch_size,
@@ -451,6 +465,7 @@ class LayerSensitivityAnalyzer:
                 sensitivity_scores[layer_name] *= 1.0 + 0.5 * normalized_magnitude
 
             del model_copy
+            del quantized_outputs
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -512,6 +527,10 @@ class LayerSensitivityAnalyzer:
                     }
                 )
         self._cached_baseline_outputs = baseline_outputs
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return baseline_outputs
 
     def _compute_quantized(self, quantized_model):
@@ -544,6 +563,10 @@ class LayerSensitivityAnalyzer:
                         else None,
                     }
                 )
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return quantized_outputs
 
     def get_sensitivity_based_config(self):
@@ -860,6 +883,10 @@ class LayerSensitivityAnalyzer:
             except Exception as e:
                 print(f"Warning: Could not quantize layer {layer_name}: {str(e)}")
                 continue
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return quantized_model
 
     def run_full_analysis(self):
@@ -926,11 +953,20 @@ class LayerSensitivityAnalyzer:
 
         results["quantized_model"] = quantized_model
 
+        # Clean up before saving
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         quantized_model_standard_format = dequantize_model_to_standard_format(
             quantized_model
         )
         output_path = f"quantized_models/{self.model_name}_{self.sensitivity_method}_{self.calibration_num_samples}_{self.config_strategy}_{self.use_iterative}"
         quantized_model_standard_format.save_pretrained(output_path)
         self.tokenizer.save_pretrained(output_path)
+
+        # Final cleanup
+        del quantized_model_standard_format
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return results

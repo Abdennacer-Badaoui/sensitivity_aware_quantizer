@@ -7,8 +7,9 @@ MODELS = [
     "facebook/opt-125m",
     # "EleutherAI/gpt-neo-125M",
     # "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-    # "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+    # "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
     # "Qwen/Qwen3-4B",
+    # "meta-llama/Llama-3.2-3B"
 ]
 
 
@@ -101,7 +102,7 @@ def parse_args():
 
     # Processing parameters
     parser.add_argument(
-        "--batch_size", type=int, default=64, help="Batch size for processing"
+        "--batch_size", type=int, default=32, help="Batch size for processing"
     )
     parser.add_argument(
         "--device", type=str, default="auto", help="Device to use (auto, cuda, or cpu)"
