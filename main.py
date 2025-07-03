@@ -29,7 +29,7 @@ def parse_args():
         "--dataset",
         type=str,
         default="wikitext",
-        help="Dataset name for calibration and evaluation",
+        help="Dataset name for profiling and evaluation",
     )
     parser.add_argument(
         "--dataset_config",
@@ -38,10 +38,10 @@ def parse_args():
         help="Dataset configuration",
     )
     parser.add_argument(
-        "--calibration_samples",
+        "--profiling_samples",
         type=int,
         default=100,
-        help="Number of samples for calibration",
+        help="Number of samples for profiling",
     )
     parser.add_argument(
         "--eval_samples", type=int, default=100, help="Number of samples for evaluation"
@@ -130,9 +130,9 @@ def main():
     all_results = run_analysis_for_models(
         results_dir=args.results_dir,
         models=args.models,
-        calibration_data=None,
+        profiling_data=None,
         eval_data=None,
-        calibration_num_samples=args.calibration_samples,
+        profiling_num_samples=args.profiling_samples,
         eval_num_samples=args.eval_samples,
         batch_size=args.batch_size,
         sensitivity_method=args.sensitivity_method,
@@ -148,7 +148,7 @@ def main():
             args.plots_dir,
             all_results,
             args.sensitivity_method,
-            args.calibration_samples,
+            args.profiling_samples,
             args.config_strategy,
             args.use_iterative,
             args.max_ppl_increase,

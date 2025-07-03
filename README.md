@@ -41,7 +41,7 @@ Use a different dataset and adjust sample sizes:
 python main.py \
     --dataset wikitext \
     --dataset_config wikitext-2-raw-v1 \
-    --calibration_samples 100 \
+    --profiling_samples 100 \
     --eval_samples 100
 ```
 
@@ -66,9 +66,9 @@ python main.py \
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `--models` | List of model names to analyze | `["facebook/opt-125m", "EleutherAI/gpt-neo-125M", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"]` |
-| `--dataset` | Dataset name for calibration and evaluation | `"wikitext"` |
+| `--dataset` | Dataset name for profiling and evaluation | `"wikitext"` |
 | `--dataset_config` | Dataset configuration | `"wikitext-2-raw-v1"` |
-| `--calibration_samples` | Number of samples for calibration | `100` |
+| `--profiling_samples` | Number of samples for profiling | `100` |
 | `--eval_samples` | Number of samples for evaluation | `100` |
 | `--sensitivity_method` | Method for sensitivity analysis (`divergence`, `hessian`) | `"divergence"` |
 | `--config_strategy` | Configuration strategy for quantization (`adaptive_threshold`, `percentile`, `exponential`, `aggressive`, `conservative`, `int8_only`, `int4_only`) | `"int4_only"` |

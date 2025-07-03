@@ -8,9 +8,9 @@ from layer_sensitivity_analyzer import LayerSensitivityAnalyzer
 def run_analysis_for_models(
     results_dir,
     models,
-    calibration_data=None,
+    profiling_data=None,
     eval_data=None,
-    calibration_num_samples=100,
+    profiling_num_samples=100,
     eval_num_samples=100,
     batch_size=32,
     sensitivity_method="divergence",
@@ -29,9 +29,9 @@ def run_analysis_for_models(
         try:
             analyzer = LayerSensitivityAnalyzer(
                 model_name=model_name,
-                calibration_data=calibration_data,
+                profiling_data=profiling_data,
                 eval_data=eval_data,
-                calibration_num_samples=calibration_num_samples,
+                profiling_num_samples=profiling_num_samples,
                 eval_num_samples=eval_num_samples,
                 batch_size=batch_size,
                 sensitivity_method=sensitivity_method,
@@ -47,7 +47,7 @@ def run_analysis_for_models(
             model_results = {
                 "model_name": model_name,
                 "sensitivity_method": sensitivity_method,
-                "calibration_num_samples": calibration_num_samples,
+                "profiling_num_samples": profiling_num_samples,
                 "config_strategy": config_strategy,
                 "use_iterative": use_iterative,
                 "layers_per_iteration": layers_per_iteration,
@@ -70,7 +70,7 @@ def run_analysis_for_models(
             # Save individual results
             out_path = os.path.join(
                 results_dir,
-                f"{model_name.replace('/', '_')}_{sensitivity_method}_{calibration_num_samples}_{config_strategy}_{use_iterative}.json",
+                f"{model_name.replace('/', '_')}_{sensitivity_method}_{profiling_num_samples}_{config_strategy}_{use_iterative}.json",
             )
             save_json(model_results, out_path)
 
@@ -88,7 +88,7 @@ def plot_comparisons(
     plots_dir,
     all_results,
     sensitivity_method,
-    calibration_num_samples,
+    profiling_num_samples,
     config_strategy,
     use_iterative,
     max_perplexity_increase,
@@ -204,7 +204,7 @@ def plot_comparisons(
     # Add overall title
     fig.suptitle(
         f"Model Analysis Results\n"
-        f"Method: {sensitivity_method} with {calibration_num_samples} samples | Config Strategy: {config_strategy} | "
+        f"Method: {sensitivity_method} with {profiling_num_samples} samples | Config Strategy: {config_strategy} | "
         f"Iterative: {use_iterative} | Max PPL Increase: {max_perplexity_increase}",
         fontsize=12,
         y=1.05,

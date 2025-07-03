@@ -25,9 +25,9 @@ class LayerSensitivityAnalyzer:
     def __init__(
         self,
         model_name: str = "microsoft/DialoGPT-small",
-        calibration_data=None,
+        profiling_data=None,
         eval_data=None,
-        calibration_num_samples: int = 100,
+        profiling_num_samples: int = 100,
         eval_num_samples: int = 100,
         batch_size: int = 128,
         dataset_name: str = "wikitext",
@@ -47,9 +47,9 @@ class LayerSensitivityAnalyzer:
 
         Args:
             model_name (str): HuggingFace model identifier. Defaults to "microsoft/DialoGPT-small".
-            calibration_data: Pre-prepared calibration dataset. If None, will be created from dataset_name.
+            profiling_data: Pre-prepared profiling dataset. If None, will be created from dataset_name.
             eval_data: Pre-prepared evaluation dataset. If None, will be created from dataset_name.
-            calibration_num_samples (int): Number of samples for calibration. Defaults to 100.
+            profiling_num_samples (int): Number of samples for profiling. Defaults to 100.
             eval_num_samples (int): Number of samples for evaluation. Defaults to 100.
             batch_size (int): Batch size for processing. Defaults to 128.
             dataset_name (str): HuggingFace dataset name. Defaults to "wikitext".
@@ -69,6 +69,7 @@ class LayerSensitivityAnalyzer:
             The analyzer supports various quantization strategies and can be configured
             for different trade-offs between model size and performance.
         """
+        # Model loading
         self.model_name = model_name
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() and device != "cpu" else "cpu"
@@ -81,12 +82,14 @@ class LayerSensitivityAnalyzer:
             model_name, torch_dtype=torch.float32, device_map=None
         ).to(self.device)
         self.model.eval()
-        self.calibration_data = calibration_data or self._prepare_hf_dataset(
+
+        # Profiling dataset preparation (profile model behavior under quantization)
+        self.profiling_data = profiling_data or self._prepare_hf_dataset(
             split="train",
-            num_samples=calibration_num_samples,
+            num_samples=profiling_num_samples,
             dataset_name=dataset_name,
             dataset_config=dataset_config,
-            split_name="calibration",
+            split_name="profiling",
         )
         self.eval_data = eval_data or self._prepare_hf_dataset(
             split="validation",
@@ -95,16 +98,16 @@ class LayerSensitivityAnalyzer:
             dataset_config=dataset_config,
             split_name="evaluation",
         )
-        self.calibration_num_samples = calibration_num_samples
+        self.profiling_num_samples = profiling_num_samples
         self.eval_num_samples = eval_num_samples
         self.batch_size = batch_size
-        self.sensitivity_scores = {}
         self.sensitivity_method = sensitivity_method
         self.config_strategy = config_strategy
         self.use_iterative = use_iterative
         self.max_perplexity_increase = max_perplexity_increase
         self.layers_per_iteration = layers_per_iteration
         self.max_iterations = max_iterations
+        self.sensitivity_scores = {}
 
     def _prepare_hf_dataset(
         self,
@@ -186,13 +189,13 @@ class LayerSensitivityAnalyzer:
             hook = module.register_forward_hook(get_activation_hook(name))
             hooks.append(hook)
         with torch.no_grad():
-            for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
+            for i in range(0, len(self.profiling_data["input_ids"]), self.batch_size):
                 end_idx = min(
-                    i + self.batch_size, len(self.calibration_data["input_ids"])
+                    i + self.batch_size, len(self.profiling_data["input_ids"])
                 )
                 batch_inputs = {
-                    "input_ids": self.calibration_data["input_ids"][i:end_idx],
-                    "attention_mask": self.calibration_data["attention_mask"][
+                    "input_ids": self.profiling_data["input_ids"][i:end_idx],
+                    "attention_mask": self.profiling_data["attention_mask"][
                         i:end_idx
                     ],
                 }
@@ -219,7 +222,7 @@ class LayerSensitivityAnalyzer:
         gpu_id: int,
         model_state_dict: Dict,
         model_config,
-        calibration_data: Dict,
+        profiling_data: Dict,
         layer_names: List[str],
         batch_size: int,
         method: str,
@@ -235,10 +238,10 @@ class LayerSensitivityAnalyzer:
             model = model.to(device)
             model.eval()
 
-            # Move calibration data to this GPU
+            # Move profiling data to this GPU
             calib_data = {
-                "input_ids": calibration_data["input_ids"].to(device),
-                "attention_mask": calibration_data["attention_mask"].to(device),
+                "input_ids": profiling_data["input_ids"].to(device),
+                "attention_mask": profiling_data["attention_mask"].to(device),
             }
 
             # Compute baseline outputs
@@ -293,7 +296,6 @@ class LayerSensitivityAnalyzer:
                     baseline_outputs, quantized_outputs
                 )
                 layer_scores[layer_name] = score
-                # print(f"GPU {gpu_id} processed {layer_name}: {score:.4f}")
 
                 del model_copy
                 torch.cuda.empty_cache()
@@ -344,9 +346,9 @@ class LayerSensitivityAnalyzer:
         ]
 
         # Prepare data for workers
-        calibration_data_cpu = {
-            "input_ids": self.calibration_data["input_ids"].cpu(),
-            "attention_mask": self.calibration_data["attention_mask"].cpu(),
+        profiling_data_cpu = {
+            "input_ids": self.profiling_data["input_ids"].cpu(),
+            "attention_mask": self.profiling_data["attention_mask"].cpu(),
         }
 
         # Setup multiprocessing
@@ -366,7 +368,7 @@ class LayerSensitivityAnalyzer:
                         gpu_id,
                         model_state_dict,
                         model_config,
-                        calibration_data_cpu,
+                        profiling_data_cpu,
                         layer_groups[i],
                         self.batch_size,
                         self.sensitivity_method,
@@ -386,8 +388,8 @@ class LayerSensitivityAnalyzer:
         for p in processes:
             p.join()
 
-        # Clean up calibration data in main process
-        del calibration_data_cpu
+        # Clean up profiling data in main process
+        del profiling_data_cpu
         torch.cuda.empty_cache()
 
         # Normalize with activation statistics
@@ -421,8 +423,8 @@ class LayerSensitivityAnalyzer:
         sensitivity_scores = {}
 
         input_data = {
-            "input_ids": self.calibration_data["input_ids"][:1],
-            "attention_mask": self.calibration_data["attention_mask"][:1],
+            "input_ids": self.profiling_data["input_ids"][:1],
+            "attention_mask": self.profiling_data["attention_mask"][:1],
         }
 
         from tqdm import tqdm
@@ -486,12 +488,12 @@ class LayerSensitivityAnalyzer:
                 data = json.load(f)
                 if (
                     data["model_name"] == self.model_name
-                    and data["calibration_num_samples"] == self.calibration_num_samples
+                    and data["profiling_num_samples"] == self.profiling_num_samples
                     and data["sensitivity_method"] == self.sensitivity_method
                 ):
                     self.sensitivity_scores = data["sensitivity_scores"]
                     print(
-                        f"Loaded cached sensitivity scores from {file} (model_name: {self.model_name}, sensitivity_method: {self.sensitivity_method}, calibration_num_samples: {self.calibration_num_samples})"
+                        f"Loaded cached sensitivity scores from {file} (model_name: {self.model_name}, sensitivity_method: {self.sensitivity_method}, profiling_num_samples: {self.profiling_num_samples})"
                     )
                     return self.sensitivity_scores
         return None
@@ -507,13 +509,13 @@ class LayerSensitivityAnalyzer:
 
         baseline_outputs = []
         with torch.no_grad():
-            for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
+            for i in range(0, len(self.profiling_data["input_ids"]), self.batch_size):
                 end_idx = min(
-                    i + self.batch_size, len(self.calibration_data["input_ids"])
+                    i + self.batch_size, len(self.profiling_data["input_ids"])
                 )
                 batch_inputs = {
-                    "input_ids": self.calibration_data["input_ids"][i:end_idx],
-                    "attention_mask": self.calibration_data["attention_mask"][
+                    "input_ids": self.profiling_data["input_ids"][i:end_idx],
+                    "attention_mask": self.profiling_data["attention_mask"][
                         i:end_idx
                     ],
                 }
@@ -544,13 +546,13 @@ class LayerSensitivityAnalyzer:
         """
         quantized_outputs = []
         with torch.no_grad():
-            for i in range(0, len(self.calibration_data["input_ids"]), self.batch_size):
+            for i in range(0, len(self.profiling_data["input_ids"]), self.batch_size):
                 end_idx = min(
-                    i + self.batch_size, len(self.calibration_data["input_ids"])
+                    i + self.batch_size, len(self.profiling_data["input_ids"])
                 )
                 batch_inputs = {
-                    "input_ids": self.calibration_data["input_ids"][i:end_idx],
-                    "attention_mask": self.calibration_data["attention_mask"][
+                    "input_ids": self.profiling_data["input_ids"][i:end_idx],
+                    "attention_mask": self.profiling_data["attention_mask"][
                         i:end_idx
                     ],
                 }
@@ -960,7 +962,7 @@ class LayerSensitivityAnalyzer:
         quantized_model_standard_format = dequantize_model_to_standard_format(
             quantized_model
         )
-        output_path = f"quantized_models/{self.model_name}_{self.sensitivity_method}_{self.calibration_num_samples}_{self.config_strategy}_{self.use_iterative}"
+        output_path = f"quantized_models/{self.model_name}_{self.sensitivity_method}_{self.profiling_num_samples}_{self.config_strategy}_{self.use_iterative}"
         quantized_model_standard_format.save_pretrained(output_path)
         self.tokenizer.save_pretrained(output_path)
 
