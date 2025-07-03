@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 import json
 import matplotlib.pyplot as plt
 import numpy as np
@@ -213,11 +214,15 @@ def plot_comparisons(
     plt.tight_layout()
 
     # Save plot
-    filename = f"comparison_size_ppl_{sensitivity_method}_{config_strategy}_{use_iterative}.png"
-    plt.savefig(os.path.join(plots_dir, filename), dpi=300, bbox_inches="tight")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = (
+        f"comparison_size_ppl_{sensitivity_method}_{config_strategy}_{use_iterative}_{timestamp}.png"
+    )
+    filepath = os.path.join(plots_dir, filename)
+    plt.savefig(filepath, dpi=300, bbox_inches="tight")
     plt.close()
 
-    print(f"\nPlot saved to {os.path.join(plots_dir, filename)}")
+    print(f"\nPlot saved to {filepath}")
 
 
 def save_json(data, filepath):
