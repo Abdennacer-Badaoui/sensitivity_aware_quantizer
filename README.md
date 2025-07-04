@@ -2,6 +2,10 @@
 
 A tool for analyzing and quantizing transformer models using sensitivity-aware mixed precision quantization.
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/df300ecb-892d-42ef-ba32-e7ec6ea308a5" alt="ChatGPT Image 3 juil 2025 à 23_50_58" />
+</p>
+
 ## Installation
 
 ```bash
