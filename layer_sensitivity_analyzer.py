@@ -80,7 +80,7 @@ class LayerSensitivityAnalyzer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.float32, device_map=None
+            model_name, torch_dtype="auto", device_map=None
         ).to(self.device)
         self.model.eval()
 
