@@ -125,58 +125,28 @@ class W8A16LinearLayer(nn.Module):
         super().__init__()
         self.register_buffer(
             "int8_weights",
-            torch.randint(0, 255, (out_features, in_features), dtype=torch.uint8),  # 0-255 for asymmetric
+            torch.randint(-128, 127, (out_features, in_features), dtype=torch.int8),
         )
         self.register_buffer("scales", torch.randn((out_features), dtype=dtype))
-        self.register_buffer("zero_points", torch.randint(0, 255, (out_features,), dtype=torch.uint8))  # Zero points for asymmetric
         if bias:
             self.register_buffer("bias", torch.randn((1, out_features), dtype=dtype))
         else:
             self.bias = None
 
     def quantize(self, weights):
-        """
-        Asymmetric quantization: maps [min_val, max_val] to [0, 255]
-        """
         w_fp32 = weights.clone().to(torch.float32)
-        
-        # Find min and max values per output channel (row-wise)
-        min_vals = w_fp32.min(dim=-1).values  # Shape: (out_features,)
-        max_vals = w_fp32.max(dim=-1).values  # Shape: (out_features,)
-        
-        # Calculate scales: (max - min) / 255
-        scales = (max_vals - min_vals) / 255.0
-        scales = torch.clamp(scales, min=1e-8)  # Prevent division by zero
+        scales = w_fp32.abs().max(dim=-1).values / 127
         scales = scales.to(weights.dtype)
-        
-        # Calculate zero points: -min_val / scale
-        zero_points = (-min_vals / scales).round().clamp(0, 255)
-        zero_points = zero_points.to(torch.uint8)
-        
-        # Quantize: q = round(x / scale + zero_point)
-        int8_weights = torch.round(w_fp32 / scales.unsqueeze(1) + zero_points.unsqueeze(1))
-        int8_weights = torch.clamp(int8_weights, 0, 255).to(torch.uint8)
-        
-        # Update buffers
+        int8_weights = torch.round(weights / scales.unsqueeze(1)).to(torch.int8)
         self.int8_weights = int8_weights
         self.scales = scales
-        self.zero_points = zero_points
 
     def forward(self, input):
-        # Dequantize: x = scale * (q - zero_point)
         casted_weights = self.int8_weights.to(input.dtype)
-        zero_points_casted = self.zero_points.to(input.dtype)
-        
-        # Dequantize weights
-        dequantized_weights = self.scales.unsqueeze(1) * (casted_weights - zero_points_casted.unsqueeze(1))
-        
-        # Perform linear operation
-        output = F.linear(input, dequantized_weights)
-        
+        output = F.linear(input, casted_weights) * self.scales
         if self.bias is not None:
             output = output + self.bias
         return output
-
 
 class W16A16LinearLayer(nn.Module):
     def __init__(self, in_features, out_features, bias=True, dtype=torch.bfloat16):

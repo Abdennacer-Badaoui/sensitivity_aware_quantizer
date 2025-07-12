@@ -80,7 +80,7 @@ class LayerSensitivityAnalyzer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype="auto", device_map=None
+            model_name, torch_dtype=torch.float32, device_map=None
         ).to(self.device)
         self.model.eval()
 
@@ -914,7 +914,14 @@ class LayerSensitivityAnalyzer:
         sensitivity_scores = self.cached_sensitivity_scores(results_dir="results")
         if not sensitivity_scores:
             print("No cached sensitivity scores found. Running analysis...")
-            sensitivity_scores = self.analyze_layer_sensitivity()
+            if self.sensitivity_method == "divergence":
+                sensitivity_scores = self.analyze_layer_sensitivity()
+            elif self.sensitivity_method == "hessian":
+                sensitivity_scores = self._analyze_layer_sensitivity_sequential(bits=8)
+            else:
+                raise ValueError(
+                    f"Unknown sensitivity method: {self.sensitivity_method}"
+                )
         end_time = time.time()
         print(f"Sensitivity analysis completed in {end_time - start_time:.2f} seconds.")
 

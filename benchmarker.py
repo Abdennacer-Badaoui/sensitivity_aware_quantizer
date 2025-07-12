@@ -33,7 +33,7 @@ def evaluate_llm_benchmark(model_name):
 
     model_config = VLLMModelConfig(
         model_name=model_name,
-        dtype="float16",
+        # dtype="float16",
         use_chat_template=True,
     )
 
@@ -55,9 +55,11 @@ def evaluate_llm_benchmark(model_name):
 
 
 if __name__ == "__main__":
+    torch.cuda.empty_cache()
+
     # Define full precision and quantized model names
-    model1 = "meta-llama/Llama-3.2-3B"
-    model2 = "quantized_models/meta-llama/Llama-3.2-3B_divergence_100_int4_only_True"
+    model1 = "Qwen/Qwen3-4B"
+    model2 = "quantized_models/Qwen/Qwen3-4B_divergence_100_int4_only_True"
 
     # Evaluate each model (comment out if already done)
     evaluate_llm_benchmark(model1)
