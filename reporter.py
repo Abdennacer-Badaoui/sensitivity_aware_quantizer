@@ -3,6 +3,7 @@
 
 def run_full_analysis_report(
     sensitivity_scores,
+    mode,
     mp_config,
     original_ppl,
     quantized_ppl,
@@ -21,7 +22,7 @@ def run_full_analysis_report(
 
     print(f"\nBit Distribution:")
     for bits in sorted(bit_counts.keys(), reverse=True):
-        print(f"  {bits:2d} bits: {bit_counts[bits]:2d} layers")
+        print(f"  {bits:2d} bits: {bit_counts[bits]:2d} {'layers' if mode == 'per_layer' else 'blocks'}")
 
     print(f"\nModel Evaluation:")
     print("-" * 70)

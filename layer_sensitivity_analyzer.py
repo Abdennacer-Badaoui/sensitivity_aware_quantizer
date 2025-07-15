@@ -30,6 +30,7 @@ class LayerSensitivityAnalyzer:
         eval_data=None,
         profiling_num_samples: int = 100,
         eval_num_samples: int = 100,
+        mode: str = "per_layer",
         batch_size: int = 128,
         dataset_name: str = "wikitext",
         dataset_config: str = "wikitext-2-raw-v1",
@@ -102,6 +103,7 @@ class LayerSensitivityAnalyzer:
         self.profiling_num_samples = profiling_num_samples
         self.eval_num_samples = eval_num_samples
         self.batch_size = batch_size
+        self.mode = mode
         self.sensitivity_method = sensitivity_method
         self.config_strategy = config_strategy
         self.use_iterative = use_iterative
@@ -151,7 +153,7 @@ class LayerSensitivityAnalyzer:
             "attention_mask": encoded["attention_mask"].to(self.device),
         }
 
-    def _get_layer_modules(self):
+    def _get_modules(self):
         """Extract all quantizable linear layers from the model.
 
         Returns:
@@ -162,6 +164,34 @@ class LayerSensitivityAnalyzer:
             if isinstance(module, nn.Linear) and "lm_head" not in name:
                 layers[name] = module
         return layers
+    
+    def _get_block_groups(self):
+        """Extract block groups from the model based on layer names.
+        
+        Returns:
+            dict: Dictionary mapping block names to lists of layer names in that block.
+        """
+        layers = self._get_modules()
+        block_groups = {}
+        
+        for layer_name in layers.keys():
+            # Extract block identifier from layer name
+            parts = layer_name.split('.')
+            block_name = None
+            
+            # Look for patterns like "model.layers.0", "model.decoder.layers.8", etc.
+            for i, part in enumerate(parts):
+                if part.isdigit() and i > 0:
+                    # Found a numeric part, construct block name
+                    block_name = '.'.join(parts[:i+1])
+                    break
+            
+            if block_name:
+                if block_name not in block_groups:
+                    block_groups[block_name] = []
+                block_groups[block_name].append(layer_name)
+        
+        return block_groups
 
     def _compute_activation_statistics(self):
         """Compute statistical metrics for layer activations.
@@ -185,7 +215,7 @@ class LayerSensitivityAnalyzer:
 
             return hook
 
-        layers = self._get_layer_modules()
+        layers = self._get_modules()
         for name, module in layers.items():
             hook = module.register_forward_hook(get_activation_hook(name))
             hooks.append(hook)
@@ -215,6 +245,30 @@ class LayerSensitivityAnalyzer:
             torch.cuda.empty_cache()
 
         return stats
+    
+    def _apply_block_quantization(self, model, block_name, layer_names, bits):
+        """Apply quantization to all layers in a block.
+        
+        Args:
+            model: Model to quantize
+            block_name: Name of the block
+            layer_names: List of layer names in the block
+            bits: Number of bits for quantization
+        """
+        if bits == 32:
+            return  # No quantization needed
+        
+        target_layer_class = {
+            16: W16A16LinearLayer,
+            8: W8A16LinearLayer,
+            4: W4A16LinearLayer
+        }[bits]
+        
+        for layer_name in layer_names:
+            try:
+                replace_single_linear_with_target(model, target_layer_class, layer_name)
+            except Exception as e:
+                print(f"Warning: Could not quantize layer {layer_name} in block {block_name}: {str(e)}")
 
     @staticmethod
     def _sensitivity_worker(
@@ -314,13 +368,23 @@ class LayerSensitivityAnalyzer:
             torch.cuda.empty_cache()
 
     def analyze_layer_sensitivity(self, bits: int = 8):
+        """Analyze sensitivity at layer or block level based on mode setting."""
+        if self.mode == "per_layer":
+            return self._analyze_per_layer_sensitivity(bits)
+        elif self.mode == "per_block":
+            return self._analyze_per_block_sensitivity(bits)
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}. Use 'per_layer' or 'per_block'")
+        
+    def _analyze_per_layer_sensitivity(self, bits: int = 8):
+        """Original per-layer analysis (renamed from analyze_layer_sensitivity)."""
         if bits != 8:
             raise ValueError("Parallel processing only supports 8-bit quantization")
 
         print(f"Parallel layer sensitivity analysis with {bits}-bit quantization")
         baseline_outputs = self._compute_baseline()
         activation_stats = self._compute_activation_statistics()
-        layers = list(self._get_layer_modules().keys())
+        layers = list(self._get_modules().keys())
 
         # Get available GPUs (exclude display GPU)
         available_gpus = []
@@ -402,6 +466,83 @@ class LayerSensitivityAnalyzer:
         self.sensitivity_scores = sensitivity_scores
         return sensitivity_scores
 
+    def _analyze_per_block_sensitivity(self, bits: int = 8):
+        """Analyze sensitivity at block level instead of individual layers."""
+        print(f"Block-level sensitivity analysis with {bits}-bit quantization")
+        
+        baseline_outputs = self._compute_baseline()
+        activation_stats = self._compute_activation_statistics()
+        block_groups = self._get_block_groups()
+        
+        print(f"Found {len(block_groups)} blocks to analyze")
+        for block_name, layer_names in block_groups.items():
+            print(f"  Block {block_name}: {len(layer_names)} layers")
+        
+        sensitivity_scores = {}
+        
+        for block_name, layer_names in tqdm(block_groups.items(), desc="Block Sensitivity Analysis"):
+            # Create a copy of the model and quantize the entire block
+            model_copy = copy.deepcopy(self.model)
+            self._apply_block_quantization(model_copy, block_name, layer_names, bits)
+            
+            # Compute outputs from the quantized model
+            quantized_outputs = self._compute_quantized(model_copy)
+            
+            # Compute sensitivity for the block
+            if self.sensitivity_method == "divergence":
+                block_sensitivity = SensitivityMetrics.compute_divergence_based_sensitivities(
+                    baseline_outputs, quantized_outputs
+                )
+            elif self.sensitivity_method == "hessian":
+                # For hessian, we'll use the average of all layers in the block
+                block_sensitivity = 0.0
+                layer_count = 0
+                layers = self._get_modules()
+                
+                input_data = {
+                    "input_ids": self.profiling_data["input_ids"][:1],
+                    "attention_mask": self.profiling_data["attention_mask"][:1],
+                }
+                
+                for layer_name in layer_names:
+                    if layer_name in layers:
+                        layer_sensitivity = SensitivityMetrics.compute_hessian_based_sensitivities(
+                            self.model,
+                            self.tokenizer,
+                            layers[layer_name].weight,
+                            input_data,
+                        )
+                        block_sensitivity += layer_sensitivity
+                        layer_count += 1
+                
+                if layer_count > 0:
+                    block_sensitivity /= layer_count
+            
+            # Normalize with activation statistics (use average of block layers)
+            block_magnitude = 0.0
+            valid_layers = 0
+            for layer_name in layer_names:
+                if layer_name in activation_stats:
+                    block_magnitude += activation_stats[layer_name]["magnitude"]
+                    valid_layers += 1
+            
+            if valid_layers > 0:
+                block_magnitude /= valid_layers
+                max_magnitude = max(stat["magnitude"] for stat in activation_stats.values())
+                normalized_magnitude = block_magnitude / max_magnitude
+                block_sensitivity *= 1.0 + 0.5 * normalized_magnitude
+            
+            sensitivity_scores[block_name] = block_sensitivity
+            
+            # Clean up
+            del model_copy
+            del quantized_outputs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
+        self.sensitivity_scores = sensitivity_scores
+        return sensitivity_scores
+
     def _analyze_layer_sensitivity_sequential(self, bits: int = 8):
         """Analyze each layer's sensitivity to quantization (Sequantial).
 
@@ -417,7 +558,7 @@ class LayerSensitivityAnalyzer:
         print(f"Sequential layer sensitivity analysis with {bits}-bit quantization")
         baseline_outputs = self._compute_baseline()
         activation_stats = self._compute_activation_statistics()
-        layers = self._get_layer_modules()
+        layers = self._get_modules()
         sensitivity_scores = {}
 
         input_data = {
@@ -564,14 +705,7 @@ class LayerSensitivityAnalyzer:
         return quantized_outputs
 
     def get_sensitivity_based_config(self):
-        """Generate mixed precision configuration based on sensitivity scores.
-
-        Uses the selected configuration strategy to determine optimal bit-width
-        for each layer based on its sensitivity score.
-
-        Returns:
-            dict: Layer-wise quantization configuration mapping layer names to bit-widths.
-        """
+        """Generate mixed precision configuration based on sensitivity scores."""
         if not self.sensitivity_scores:
             raise ValueError(
                 "No sensitivity scores available. Run analyze_layer_sensitivity first."
@@ -594,30 +728,30 @@ class LayerSensitivityAnalyzer:
             medium_threshold = mean_sens
             low_threshold = mean_sens - 0.5 * std_sens
 
-            for layer_name, sensitivity in self.sensitivity_scores.items():
+            for name, sensitivity in self.sensitivity_scores.items():
                 if sensitivity >= high_threshold:
-                    config[layer_name] = 32
+                    config[name] = 32
                 elif sensitivity >= medium_threshold:
-                    config[layer_name] = 16
+                    config[name] = 16
                 elif sensitivity >= low_threshold:
-                    config[layer_name] = 8
+                    config[name] = 8
                 else:
-                    config[layer_name] = 4
+                    config[name] = 4
 
         elif self.config_strategy == "percentile":
             p75 = np.percentile(sensitivities, 75)
             p50 = np.percentile(sensitivities, 50)
             p25 = np.percentile(sensitivities, 25)
 
-            for layer_name, sensitivity in self.sensitivity_scores.items():
+            for name, sensitivity in self.sensitivity_scores.items():
                 if sensitivity >= p75:
-                    config[layer_name] = 32
+                    config[name] = 32
                 elif sensitivity >= p50:
-                    config[layer_name] = 16
+                    config[name] = 16
                 elif sensitivity >= p25:
-                    config[layer_name] = 8
+                    config[name] = 8
                 else:
-                    config[layer_name] = 4
+                    config[name] = 4
 
         elif self.config_strategy == "exponential":
             norm_sensitivities = {}
@@ -625,85 +759,102 @@ class LayerSensitivityAnalyzer:
             if sens_range == 0:
                 sens_range = 1
 
-            for layer_name, sensitivity in self.sensitivity_scores.items():
+            for name, sensitivity in self.sensitivity_scores.items():
                 normalized = (sensitivity - min_sens) / sens_range
                 exp_score = np.exp(2 * normalized) / np.exp(2)
-                norm_sensitivities[layer_name] = exp_score
+                norm_sensitivities[name] = exp_score
 
-            for layer_name, norm_sens in norm_sensitivities.items():
+            for name, norm_sens in norm_sensitivities.items():
                 if norm_sens >= 0.75:
-                    config[layer_name] = 32
+                    config[name] = 32
                 elif norm_sens >= 0.5:
-                    config[layer_name] = 16
+                    config[name] = 16
                 elif norm_sens >= 0.25:
-                    config[layer_name] = 8
+                    config[name] = 8
                 else:
-                    config[layer_name] = 4
+                    config[name] = 4
 
         elif self.config_strategy == "conservative":
             low_threshold = mean_sens - 0.25 * std_sens
             medium_threshold = mean_sens + 0.25 * std_sens
             high_threshold = mean_sens + 0.75 * std_sens
 
-            for layer_name, sensitivity in self.sensitivity_scores.items():
+            for name, sensitivity in self.sensitivity_scores.items():
                 if sensitivity >= high_threshold:
-                    config[layer_name] = 32
+                    config[name] = 32
                 elif sensitivity >= medium_threshold:
-                    config[layer_name] = 32
+                    config[name] = 32
                 elif sensitivity >= low_threshold:
-                    config[layer_name] = 16
+                    config[name] = 16
                 else:
-                    config[layer_name] = 8
+                    config[name] = 8
 
         elif self.config_strategy == "aggressive":
             high_threshold = mean_sens + 1.0 * std_sens
             medium_threshold = mean_sens + 0.25 * std_sens
             low_threshold = mean_sens - 0.25 * std_sens
 
-            for layer_name, sensitivity in self.sensitivity_scores.items():
+            for name, sensitivity in self.sensitivity_scores.items():
                 if sensitivity >= high_threshold:
-                    config[layer_name] = 32
+                    config[name] = 32
                 elif sensitivity >= medium_threshold:
-                    config[layer_name] = 16
+                    config[name] = 16
                 elif sensitivity >= low_threshold:
-                    config[layer_name] = 8
+                    config[name] = 8
                 else:
-                    config[layer_name] = 4
+                    config[name] = 4
 
         elif self.config_strategy == "int8_only":
-            for layer_name in self.sensitivity_scores.keys():
-                config[layer_name] = 8
+            for name in self.sensitivity_scores.keys():
+                config[name] = 8
 
         elif self.config_strategy == "int4_only":
-            for layer_name in self.sensitivity_scores.keys():
-                config[layer_name] = 4
+            for name in self.sensitivity_scores.keys():
+                config[name] = 4
 
-        bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
-        for bits in config.values():
-            bit_counts[bits] += 1
+        # Count configurations
+        if self.mode == "per_block":
+            # For block mode, count the total layers affected
+            block_groups = self._get_block_groups()
+            bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
+            total_layers = 0
+            
+            for block_name, bits in config.items():
+                if block_name in block_groups:
+                    layer_count = len(block_groups[block_name])
+                    bit_counts[bits] += layer_count
+                    total_layers += layer_count
+            
+            print(f"\nBit allocation distribution (block mode):")
+            print(f"FP32: {bit_counts[32]} layers ({bit_counts[32]/total_layers*100:.1f}%)")
+            print(f"BF16: {bit_counts[16]} layers ({bit_counts[16]/total_layers*100:.1f}%)")
+            print(f"INT8: {bit_counts[8]} layers ({bit_counts[8]/total_layers*100:.1f}%)")
+            print(f"INT4: {bit_counts[4]} layers ({bit_counts[4]/total_layers*100:.1f}%)")
+        else:
+            # Original layer counting for per_layer mode
+            bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
+            for bits in config.values():
+                bit_counts[bits] += 1
 
-        total_layers = len(config)
-        print(f"\nBit allocation distribution:")
-        print(f"FP32: {bit_counts[32]} layers ({bit_counts[32]/total_layers*100:.1f}%)")
-        print(f"BF16: {bit_counts[16]} layers ({bit_counts[16]/total_layers*100:.1f}%)")
-        print(f"INT8: {bit_counts[8]} layers ({bit_counts[8]/total_layers*100:.1f}%)")
-        print(f"INT4: {bit_counts[4]} layers ({bit_counts[4]/total_layers*100:.1f}%)")
+            total_layers = len(config)
+            print(f"\nBit allocation distribution (layer mode):")
+            print(f"FP32: {bit_counts[32]} layers ({bit_counts[32]/total_layers*100:.1f}%)")
+            print(f"BF16: {bit_counts[16]} layers ({bit_counts[16]/total_layers*100:.1f}%)")
+            print(f"INT8: {bit_counts[8]} layers ({bit_counts[8]/total_layers*100:.1f}%)")
+            print(f"INT4: {bit_counts[4]} layers ({bit_counts[4]/total_layers*100:.1f}%)")
 
         return config
 
     def get_iterative_config(self):
-        """Iteratively refine quantization configuration to meet performance constraints.
-
-        Progressively upgrades layer precision based on sensitivity scores while
-        monitoring model performance, aiming to find the optimal trade-off between
-        model size and accuracy.
-
-        Returns:
-            dict: Optimized layer-wise quantization configuration.
-        """
-        print(f"Starting progressive iterative configuration:")
+        """Iteratively refine quantization configuration to meet performance constraints."""
+        print(f"Starting progressive iterative configuration in {self.mode} mode:")
         print(f"  - Max perplexity increase: {self.max_perplexity_increase}")
-        print(f"  - Layers per iteration: {self.layers_per_iteration}")
+        
+        if self.mode == "per_layer":
+            print(f"  - Layers per iteration: {self.layers_per_iteration}")
+        else:  # per_block mode
+            print(f"  - Blocks per iteration: 1 (block-by-block)")
+        
         print(f"  - Max total iterations: {self.max_iterations}")
 
         baseline_ppl = perplexity(
@@ -716,7 +867,7 @@ class LayerSensitivityAnalyzer:
         print(f"Baseline perplexity: {baseline_ppl:.4f}")
 
         current_config = self.get_sensitivity_based_config()
-        sorted_layers = sorted(
+        sorted_items = sorted(
             self.sensitivity_scores.items(), key=lambda x: x[1], reverse=True
         )
         upgrade_levels = [(4, 8), (8, 16), (16, 32)]
@@ -724,23 +875,31 @@ class LayerSensitivityAnalyzer:
 
         for from_bits, to_bits in upgrade_levels:
             print(f"\n{'='*50}")
-            print(f"UPGRADING LAYERS FROM {from_bits} TO {to_bits} BITS")
+            print(f"UPGRADING FROM {from_bits} TO {to_bits} BITS")
             print(f"{'='*50}")
 
-            layers_at_current_level = [
-                (layer_name, sensitivity)
-                for layer_name, sensitivity in sorted_layers
-                if current_config[layer_name] == from_bits
+            items_at_current_level = [
+                (name, sensitivity)
+                for name, sensitivity in sorted_items
+                if current_config[name] == from_bits
             ]
 
-            if not layers_at_current_level:
-                print(f"No layers at {from_bits} bits. Skipping this level.")
+            if not items_at_current_level:
+                print(f"No items at {from_bits} bits. Skipping this level.")
                 continue
 
-            print(f"Found {len(layers_at_current_level)} layers at {from_bits} bits")
-            layers_upgraded_this_level = 0
+            items_upgraded_this_level = 0
+            
+            if self.mode == "per_block":
+                block_groups = self._get_block_groups()
+                total_layers_at_level = sum(
+                    len(block_groups.get(name, [])) for name, _ in items_at_current_level
+                )
+                print(f"Found {len(items_at_current_level)} blocks at {from_bits} bits ({total_layers_at_level} total layers)")
+            else:
+                print(f"Found {len(items_at_current_level)} layers at {from_bits} bits")
 
-            while layers_at_current_level and total_iteration < self.max_iterations:
+            while items_at_current_level and total_iteration < self.max_iterations:
                 total_iteration += 1
                 quantized_model = self.apply_mixed_precision(current_config)
                 current_ppl = perplexity(
@@ -764,42 +923,66 @@ class LayerSensitivityAnalyzer:
                         torch.cuda.empty_cache()
                     return current_config
 
-                layers_to_upgrade = layers_at_current_level[: self.layers_per_iteration]
-                print(f"  Upgrading {len(layers_to_upgrade)} layers:")
-                for layer_name, sensitivity in layers_to_upgrade:
-                    current_config[layer_name] = to_bits
-                    layers_upgraded_this_level += 1
-                    print(f"    - {layer_name} (sensitivity: {sensitivity:.4f})")
+                # Determine how many items to upgrade based on mode
+                if self.mode == "per_block":
+                    # For per_block mode: upgrade one block at a time
+                    items_to_upgrade = items_at_current_level[:1]
+                    upgrade_description = "block"
+                else:
+                    # For per_layer mode: upgrade layers_per_iteration layers at a time
+                    items_to_upgrade = items_at_current_level[:self.layers_per_iteration]
+                    upgrade_description = f"{len(items_to_upgrade)} layers"
+                
+                print(f"  Upgrading {upgrade_description}:")
+                
+                for name, sensitivity in items_to_upgrade:
+                    current_config[name] = to_bits
+                    items_upgraded_this_level += 1
+                    if self.mode == "per_block":
+                        block_groups = self._get_block_groups()
+                        layer_count = len(block_groups.get(name, []))
+                        print(f"    - {name} ({layer_count} layers, sensitivity: {sensitivity:.4f})")
+                    else:
+                        print(f"    - {name} (sensitivity: {sensitivity:.4f})")
 
-                layers_at_current_level = layers_at_current_level[
-                    self.layers_per_iteration :
-                ]
+                # Remove upgraded items from the list
+                if self.mode == "per_block":
+                    items_at_current_level = items_at_current_level[1:]  # Remove 1 block
+                else:
+                    items_at_current_level = items_at_current_level[self.layers_per_iteration:]  # Remove layers_per_iteration layers
+
                 del quantized_model
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
             print(f"\nCompleted {from_bits}→{to_bits} bit level:")
-            print(f"  - Layers upgraded: {layers_upgraded_this_level}")
-            print(
-                f"  - Remaining layers at {from_bits} bits: {len(layers_at_current_level)}"
-            )
+            print(f"  - Items upgraded: {items_upgraded_this_level}")
+            print(f"  - Remaining items at {from_bits} bits: {len(items_at_current_level)}")
 
             if total_iteration >= self.max_iterations:
                 print(f"  - Reached maximum iterations ({self.max_iterations})")
                 break
 
-            bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
-            for bits in current_config.values():
-                bit_counts[bits] += 1
+            # Show current distribution
+            if self.mode == "per_block":
+                block_groups = self._get_block_groups()
+                bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
+                total_layers = 0
+                
+                for block_name, bits in current_config.items():
+                    if block_name in block_groups:
+                        layer_count = len(block_groups[block_name])
+                        bit_counts[bits] += layer_count
+                        total_layers += layer_count
+            else:
+                bit_counts = {32: 0, 16: 0, 8: 0, 4: 0}
+                for bits in current_config.values():
+                    bit_counts[bits] += 1
+                total_layers = len(current_config)
 
-            total_layers = len(current_config)
             print(f"  - Current distribution:")
-            print(
-                f"    FP32: {bit_counts[32]} ({bit_counts[32]/total_layers*100:.1f}%)"
-            )
-            print(
-                f"    BF16: {bit_counts[16]} ({bit_counts[16]/total_layers*100:.1f}%)"
-            )
+            print(f"    FP32: {bit_counts[32]} ({bit_counts[32]/total_layers*100:.1f}%)")
+            print(f"    BF16: {bit_counts[16]} ({bit_counts[16]/total_layers*100:.1f}%)")
             print(f"    INT8: {bit_counts[8]} ({bit_counts[8]/total_layers*100:.1f}%)")
             print(f"    INT4: {bit_counts[4]} ({bit_counts[4]/total_layers*100:.1f}%)")
 
@@ -817,18 +1000,14 @@ class LayerSensitivityAnalyzer:
         )
 
         final_perplexity_increase = (final_ppl - baseline_ppl) / baseline_ppl
-        print(
-            f"Final perplexity: {final_ppl:.4f} (increase: {final_perplexity_increase:.3f})"
-        )
+        print(f"Final perplexity: {final_ppl:.4f} (increase: {final_perplexity_increase:.3f})")
         print(f"Total iterations used: {total_iteration}")
 
         if final_perplexity_increase <= self.max_perplexity_increase:
             print("✓ Final configuration meets perplexity constraint!")
         else:
             print("⚠ Final configuration exceeds perplexity constraint.")
-            print(
-                "  Consider using a less aggressive initial strategy or higher constraint."
-            )
+            print("  Consider using a less aggressive initial strategy or higher constraint.")
 
         del quantized_model
         if torch.cuda.is_available():
@@ -837,46 +1016,52 @@ class LayerSensitivityAnalyzer:
         return current_config
 
     def apply_mixed_precision(self, config: Dict[str, int]):
-        """Apply mixed precision quantization to the model.
-
-        Args:
-            config (Dict[str, int]): Layer-wise quantization configuration.
-
-        Returns:
-            torch.nn.Module: Quantized model with mixed precision layers.
-        """
-        print("\n Applying mixed precision quantization...")
+        """Apply mixed precision quantization to the model."""
+        print(f"\nApplying mixed precision quantization in {self.mode} mode...")
         quantized_model = copy.deepcopy(self.model)
-        for layer_name, bits in config.items():
-            if not layer_name.strip():
-                continue
-
-            try:
-                parts = layer_name.split(".")
-                current = self.model
-                for part in parts:
-                    if not part:
-                        continue
-                    current = getattr(current, part)
-
-                if bits == 32:
+        
+        if self.mode == "per_layer":
+            # Original per-layer quantization
+            for layer_name, bits in config.items():
+                if not layer_name.strip():
                     continue
-                elif bits == 16:
-                    replace_single_linear_with_target(
-                        quantized_model, W16A16LinearLayer, layer_name
-                    )
-                elif bits == 8:
-                    replace_single_linear_with_target(
-                        quantized_model, W8A16LinearLayer, layer_name
-                    )
-                else:
-                    replace_single_linear_with_target(
-                        quantized_model, W4A16LinearLayer, layer_name
-                    )
 
-            except Exception as e:
-                print(f"Warning: Could not quantize layer {layer_name}: {str(e)}")
-                continue
+                try:
+                    parts = layer_name.split(".")
+                    current = self.model
+                    for part in parts:
+                        if not part:
+                            continue
+                        current = getattr(current, part)
+
+                    if bits == 32:
+                        continue
+                    elif bits == 16:
+                        replace_single_linear_with_target(
+                            quantized_model, W16A16LinearLayer, layer_name
+                        )
+                    elif bits == 8:
+                        replace_single_linear_with_target(
+                            quantized_model, W8A16LinearLayer, layer_name
+                        )
+                    else:
+                        replace_single_linear_with_target(
+                            quantized_model, W4A16LinearLayer, layer_name
+                        )
+
+                except Exception as e:
+                    print(f"Warning: Could not quantize layer {layer_name}: {str(e)}")
+                    continue
+        
+        elif self.mode == "per_block":
+            # Block-level quantization
+            block_groups = self._get_block_groups()
+            
+            for block_name, bits in config.items():
+                if block_name in block_groups:
+                    layer_names = block_groups[block_name]
+                    print(f"  Quantizing block {block_name} to {bits} bits ({len(layer_names)} layers)")
+                    self._apply_block_quantization(quantized_model, block_name, layer_names, bits)
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -945,6 +1130,7 @@ class LayerSensitivityAnalyzer:
 
         results = run_full_analysis_report(
             sensitivity_scores,
+            self.mode,
             mp_config,
             original_ppl,
             quantized_ppl,

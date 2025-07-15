@@ -13,6 +13,7 @@ def run_analysis_for_models(
     eval_data=None,
     profiling_num_samples=100,
     eval_num_samples=100,
+    mode="per_layer",
     batch_size=32,
     sensitivity_method="divergence",
     config_strategy="adaptive_threshold",
@@ -34,6 +35,7 @@ def run_analysis_for_models(
                 eval_data=eval_data,
                 profiling_num_samples=profiling_num_samples,
                 eval_num_samples=eval_num_samples,
+                mode=mode,
                 batch_size=batch_size,
                 sensitivity_method=sensitivity_method,
                 config_strategy=config_strategy,
@@ -47,6 +49,7 @@ def run_analysis_for_models(
 
             model_results = {
                 "model_name": model_name,
+                "mode": mode,
                 "sensitivity_method": sensitivity_method,
                 "profiling_num_samples": profiling_num_samples,
                 "config_strategy": config_strategy,
@@ -71,7 +74,7 @@ def run_analysis_for_models(
             # Save individual results
             out_path = os.path.join(
                 results_dir,
-                f"{model_name.replace('/', '_')}_{sensitivity_method}_{profiling_num_samples}_{config_strategy}_{use_iterative}.json",
+                f"{model_name.replace('/', '_')}_{sensitivity_method}_{mode}_{profiling_num_samples}_{config_strategy}_{use_iterative}.json",
             )
             save_json(model_results, out_path)
 
@@ -89,6 +92,7 @@ def plot_comparisons(
     plots_dir,
     all_results,
     sensitivity_method,
+    mode,
     profiling_num_samples,
     config_strategy,
     use_iterative,
@@ -205,7 +209,7 @@ def plot_comparisons(
     # Add overall title
     fig.suptitle(
         f"Model Analysis Results\n"
-        f"Method: {sensitivity_method} with {profiling_num_samples} samples | Config Strategy: {config_strategy} | "
+        f"Method: {sensitivity_method} {mode} with {profiling_num_samples} samples | Config Strategy: {config_strategy} | "
         f"Iterative: {use_iterative} | Max PPL Increase: {max_perplexity_increase}",
         fontsize=12,
         y=1.05,
@@ -216,7 +220,7 @@ def plot_comparisons(
     # Save plot
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = (
-        f"comparison_size_ppl_{sensitivity_method}_{config_strategy}_{use_iterative}_{timestamp}.png"
+        f"comparison_size_ppl_{sensitivity_method}_{mode}_{config_strategy}_{use_iterative}_{timestamp}.png"
     )
     filepath = os.path.join(plots_dir, filename)
     plt.savefig(filepath, dpi=300, bbox_inches="tight")

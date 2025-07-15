@@ -4,7 +4,7 @@ import argparse
 from utils import run_analysis_for_models, plot_comparisons
 
 MODELS = [
-    #"facebook/opt-125m",
+    "facebook/opt-125m",
     # "EleutherAI/gpt-neo-125M",
     # "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     # "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
@@ -12,7 +12,7 @@ MODELS = [
     #"meta-llama/Llama-3.2-3B",
     #"HuggingFaceTB/SmolLM3-3B",
     #"microsoft/Phi-4-mini-flash-reasoning",
-    "google/gemma-2b",
+    #"google/gemma-2b",
 
 ]
 
@@ -49,6 +49,14 @@ def parse_args():
     )
     parser.add_argument(
         "--eval_samples", type=int, default=100, help="Number of samples for evaluation"
+    )
+
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="per_layer",
+        choices=["per_layer", "per_block"],
+        help="Mode of analysis: per_layer or per_block",
     )
 
     # Sensitivity analysis methods
@@ -138,6 +146,7 @@ def main():
         eval_data=None,
         profiling_num_samples=args.profiling_samples,
         eval_num_samples=args.eval_samples,
+        mode=args.mode,
         batch_size=args.batch_size,
         sensitivity_method=args.sensitivity_method,
         config_strategy=args.config_strategy,
@@ -152,6 +161,7 @@ def main():
             args.plots_dir,
             all_results,
             args.sensitivity_method,
+            args.mode,
             args.profiling_samples,
             args.config_strategy,
             args.use_iterative,
