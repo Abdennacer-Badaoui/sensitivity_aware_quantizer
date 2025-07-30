@@ -3,7 +3,7 @@
 A tool for analyzing and quantizing transformer models using sensitivity-aware mixed precision quantization.
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/a7ec6f0b-6fd1-44b3-983d-a91baa5dd738" alt="Capture d’écran 2025-07-04 à 10 35 25 AM" />
+  <img src="https://github.com/user-attachments/assets/a7ec6f0b-6fd1-44b3-983d-a91baa5dd738" alt="Capture d'écran 2025-07-04 à 10 35 25 AM" />
 </p>
 
 ## Installation
@@ -20,7 +20,7 @@ The tool provides various command-line options to customize the quantization pro
 
 ### Basic Usage
 
-Run with default settings (analyzes multiple default models: facebook/opt-125m, EleutherAI/gpt-neo-125M, TinyLlama/TinyLlama-1.1B-Chat-v1.0):
+Run with default settings (current default model: stabilityai/stablelm-2-1_6b):
 
 ```bash
 python main.py
@@ -34,7 +34,8 @@ Analyze specific models with custom sensitivity method and configuration strateg
 python main.py \
     --models facebook/opt-125m EleutherAI/gpt-neo-125M \
     --sensitivity_method divergence \
-    --config_strategy int4_only
+    --config_strategy int4_only \
+    --mode per_layer
 ```
 
 ### Custom Dataset Configuration
@@ -57,28 +58,30 @@ Complete example with iterative quantization and perplexity control:
 python main.py \
     --models facebook/opt-125m \
     --sensitivity_method divergence \
-    --config_strategy int4_only \
+    --config_strategy adaptive_threshold \
     --use_iterative \
-    --max_ppl_increase 0.01 \
-    --layers_per_iteration 3 \
+    --max_ppl_increase 0.1 \
+    --layers_per_iteration 5 \
     --max_iterations 100 \
-    --batch_size 32
+    --batch_size 32 \
+    --mode per_layer
 ```
 
 ## Command Line Arguments
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--models` | List of model names to analyze | `["facebook/opt-125m", "EleutherAI/gpt-neo-125M", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"]` |
+| `--models` | List of model names to analyze | `["stabilityai/stablelm-2-1_6b"]` |
 | `--dataset` | Dataset name for profiling and evaluation | `"wikitext"` |
 | `--dataset_config` | Dataset configuration | `"wikitext-2-raw-v1"` |
 | `--profiling_samples` | Number of samples for profiling | `100` |
 | `--eval_samples` | Number of samples for evaluation | `100` |
+| `--mode` | Mode of analysis (`per_layer`, `per_block`) | `"per_layer"` |
 | `--sensitivity_method` | Method for sensitivity analysis (`divergence`, `hessian`) | `"divergence"` |
-| `--config_strategy` | Configuration strategy for quantization (`adaptive_threshold`, `percentile`, `exponential`, `aggressive`, `conservative`, `int8_only`, `int4_only`) | `"int4_only"` |
+| `--config_strategy` | Configuration strategy (`adaptive_threshold`, `percentile`, `exponential`, `aggressive`, `conservative`, `int8_only`, `int4_only`) | `"adaptive_threshold"` |
 | `--use_iterative` | Use iterative quantization method | `False` |
-| `--max_ppl_increase` | Maximum allowed increase in perplexity during quantization | `0.01` |
-| `--layers_per_iteration` | Number of layers to process per iteration | `3` |
+| `--max_ppl_increase` | Maximum allowed increase in perplexity during quantization | `0.1` |
+| `--layers_per_iteration` | Number of layers to process per iteration | `5` |
 | `--max_iterations` | Maximum number of iterations for processing | `100` |
 | `--batch_size` | Batch size for processing | `32` |
 | `--device` | Device to use (`auto`, `cuda`, or `cpu`) | `"auto"` |
