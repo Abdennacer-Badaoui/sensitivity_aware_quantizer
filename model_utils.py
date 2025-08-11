@@ -34,7 +34,6 @@ def perplexity(model, tokenizer, eval_data, num_samples, device):
         total_loss = 0
         total_tokens = 0
 
-        # Process in batches
         batch_size = 1  # Process one text at a time for stability
         for start_index in range(0, len(encoded_texts), batch_size):
             end_index = min(start_index + batch_size, len(encoded_texts))
@@ -86,6 +85,7 @@ def get_model_size_mb(model):
     Returns:
         total_size_mb: model size in MB
     """
+    import torch
 
     def get_dtype_bits(dtype):
         """Map PyTorch dtypes to their bit sizes"""
@@ -123,14 +123,31 @@ def get_model_size_mb(model):
 
         return None, None
 
+    # Count parameters and buffers at the top level only to avoid double counting
     param_size = 0
     buffer_size = 0
     layer_breakdown = {}
     quantized_layers = {}
+    counted_params = set()
+    counted_buffers = set()
 
-    # Analyze each module
+    # First, collect all parameter and buffer names to avoid double counting
+    for name, param in model.named_parameters():
+        if id(param) not in counted_params:
+            bits = get_dtype_bits(param.dtype)
+            size = param.nelement() * (bits / 8)
+            param_size += size
+            counted_params.add(id(param))
+
+    for name, buffer in model.named_buffers():
+        if id(buffer) not in counted_buffers:
+            size = buffer.nelement() * buffer.element_size()
+            buffer_size += size
+            counted_buffers.add(id(buffer))
+
+    # Now analyze layer-by-layer for breakdown (but don't add to total again)
     for name, module in model.named_modules():
-        if len(list(module.children())) > 0:  # Skip parent modules
+        if len(list(module.children())) > 0:  
             continue
 
         # Check if this is a quantized layer
@@ -140,30 +157,21 @@ def get_model_size_mb(model):
             # Handle quantized layers
             quantized_layers[name] = quant_type
 
-            # Calculate size based on quantized representation
             module_param_size = 0
             module_buffer_size = 0
 
             for param_name, param in module.named_parameters():
-                # For quantized layers, weights are typically stored in buffers
-                # Parameters might be scales, zero_points, etc. (usually float)
                 bits = get_dtype_bits(param.dtype)
                 size = param.nelement() * (bits / 8)
                 module_param_size += size
 
             for buffer_name, buffer in module.named_buffers():
                 if "weight" in buffer_name.lower() or "packed" in buffer_name.lower():
-                    # This is the quantized weight data
                     if "packed" in buffer_name.lower():
-                        # Packed weights: use actual buffer size since packing is already done
-                        # Each byte stores multiple weights efficiently
                         size = buffer.nelement() * buffer.element_size()
                     else:
-                        # Direct quantized weights (not packed)
-                        # Use actual buffer size since it's stored as uint8/int8
                         size = buffer.nelement() * buffer.element_size()
                 else:
-                    # Other buffers (scales, zero_points, etc.)
                     size = buffer.nelement() * buffer.element_size()
                 module_buffer_size += size
 
@@ -173,9 +181,6 @@ def get_model_size_mb(model):
                 "buffer_size": module_buffer_size,
                 "total_size": module_param_size + module_buffer_size,
             }
-
-            param_size += module_param_size
-            buffer_size += module_buffer_size
 
         else:
             # Handle standard (non-quantized) layers
@@ -198,9 +203,6 @@ def get_model_size_mb(model):
                     "buffer_size": module_buffer_size,
                     "total_size": module_param_size + module_buffer_size,
                 }
-
-                param_size += module_param_size
-                buffer_size += module_buffer_size
 
     total_size_bytes = param_size + buffer_size
     total_size_mb = total_size_bytes / (1024**2)
