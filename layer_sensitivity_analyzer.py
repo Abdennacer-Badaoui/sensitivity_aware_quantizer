@@ -81,7 +81,7 @@ class LayerSensitivityAnalyzer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.float32, device_map=None
+            model_name, torch_dtype=torch.float32, device_map=None,
         ).to(self.device)
         self.model.eval()
 
@@ -278,7 +278,6 @@ class LayerSensitivityAnalyzer:
         profiling_data: Dict,
         layer_names: List[str],
         batch_size: int,
-        method: str,
         output_queue: mp.Queue,
     ):
         try:
@@ -390,7 +389,7 @@ class LayerSensitivityAnalyzer:
         available_gpus = []
         for i in range(
             0, torch.cuda.device_count()
-        ):  # excluding 0 for the moment (Should be fixed because we usually get CUDA OOM on device 0)
+        ): 
             total_mem = torch.cuda.get_device_properties(i).total_memory
             if total_mem >= 10 * 1024**3:  # At least 10GB memory
                 available_gpus.append(i)
@@ -433,7 +432,6 @@ class LayerSensitivityAnalyzer:
                         profiling_data_cpu,
                         layer_groups[i],
                         self.batch_size,
-                        self.sensitivity_method,
                         output_queue,
                     ),
                 )
