@@ -17,7 +17,7 @@ A sophisticated tool for analyzing and quantizing transformer models using sensi
 
 ## 🔧 How It Works
 
-1. **Profiling**: Analyzes model behavior on calibration data to establish baseline performance
+1. **Profiling**: Analyzes model behavior on profiling data to establish baseline performance
 2. **Sensitivity Computation**: Calculates sensitivity scores for each layer using:
    - **Divergence Method**: Measures output distribution changes (Jensen-Shannon divergence)
    - **Hessian Method**: Estimates curvature using Hessian eigenvalue approximation
@@ -37,7 +37,7 @@ A sophisticated tool for analyzing and quantizing transformer models using sensi
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/Abdennacer-Badaoui/sensitivity_aware_quantizer.git
 cd sensitivity_aware_quantizer
 
 # Install dependencies
