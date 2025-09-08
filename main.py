@@ -4,16 +4,9 @@ import argparse
 from utils import run_analysis_for_models, plot_comparisons
 
 MODELS = [
-    "facebook/opt-125m",
-    # "EleutherAI/gpt-neo-125M",
-    # "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-    # "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
-    #"Qwen/Qwen3-4B",
-    #"meta-llama/Llama-3.2-3B",
-    #"HuggingFaceTB/SmolLM3-3B",
-    #"microsoft/Phi-4-mini-flash-reasoning",
-    #"google/gemma-2b",
-
+    "HuggingFaceTB/SmolLM2-135M",
+    "google/gemma-3-1b-it",
+    "Qwen/Qwen3-4B",
 ]
 
 
@@ -94,7 +87,7 @@ def parse_args():
     parser.add_argument(
         "--max_ppl_increase",
         type=float,
-        default=0.1,
+        default=0.01,
         help="Maximum allowed increase in perplexity during quantization",
     )
 
